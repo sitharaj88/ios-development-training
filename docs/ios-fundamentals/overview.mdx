@@ -1,0 +1,167 @@
+---
+id: overview
+title: Module 02 — iOS Fundamentals & UIKit
+sidebar_label: Overview
+description: iOS architecture, app lifecycle, sandbox, Xcode, view controllers, Auto Layout, navigation, and UICollectionView — the platform under the framework.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, AppLifecycleDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 02 · 3 weeks · 4 topics</span>
+  <h2>The platform under the framework</h2>
+  <p>
+    SwiftUI sits on top of UIKit, and UIKit sits on top of the iOS runtime,
+    the sandbox, and the app lifecycle. Understanding the layers underneath
+    makes you faster at debugging and architecting any iOS app.
+  </p>
+</div>
+
+## Why UIKit still matters
+
+You will write SwiftUI for almost everything new. But:
+
+- Most enterprise codebases are 80%+ UIKit and will be for years.
+- Several SwiftUI APIs have UIKit-only equivalents (custom transitions, advanced
+  text input, complex collection layouts).
+- Debugging weird SwiftUI behavior often requires inspecting the underlying
+  `UIHostingController` and view hierarchy.
+- Interview questions still lean heavily on UIKit fundamentals.
+
+<Callout kind="tip" title="The right mindset">
+Treat UIKit as the *runtime model* of iOS UI. Even when you live in SwiftUI,
+knowing `viewDidLoad`, the responder chain, and the run loop pays compounding
+dividends.
+</Callout>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · iOS Platform & Architecture', description: 'iOS layers (Cocoa Touch / Media / Core Services / Core OS), app sandbox, file system layout, App Transport Security, and entitlements.' },
+    { title: 'Topic 2 · App Lifecycle & Xcode', description: 'AppDelegate vs SceneDelegate vs SwiftUI App, launch sequence, scene phases, Xcode workspace anatomy, schemes, build configurations, signing.' },
+    { title: 'Topic 3 · UIKit Essentials', description: 'UIViewController lifecycle (viewDidLoad → viewWillAppear → viewDidAppear → viewWillDisappear), UIView, IBOutlets, IBActions, target-action, the responder chain.' },
+    { title: 'Topic 4 · Layout & Navigation', description: 'Auto Layout constraints, UIStackView, Safe Area, size classes, UINavigationController, UITabBarController, and UICollectionView with compositional layout.' },
+  ]}
+/>
+
+## App lifecycle at a glance
+
+<Diagram
+  title="SwiftUI App + Scene + View lifecycle"
+  caption="Process launches the App, the App vends Scenes (windows), and each Scene presents a View tree whose lifecycle hooks fire as views appear and disappear."
+>
+  <AppLifecycleDiagram />
+</Diagram>
+
+The same diagram applies whether you use SwiftUI's `@main App` or UIKit's
+`UIApplicationDelegate` + `UISceneDelegate`. The naming changes, the model does not.
+
+## Three ways to declare an app entry point
+
+<ComparisonCard
+  left={{
+    label: 'UIKit · pre-iOS 13',
+    title: 'AppDelegate only',
+    variant: 'old',
+    points: [
+      'Single window per app',
+      'application(_:didFinishLaunchingWithOptions:)',
+      'Lifecycle: didBecomeActive / willResignActive',
+      'Storyboard entry from Info.plist',
+      'Still required for some background entry points',
+    ],
+  }}
+  right={{
+    label: 'SwiftUI · iOS 14+',
+    title: '@main App + Scene',
+    variant: 'new',
+    points: [
+      'Multiple scenes (iPad multitasking, macOS windows)',
+      '@main struct App: App with var body: some Scene',
+      'WindowGroup, DocumentGroup, Settings scenes',
+      '@Environment(\\.scenePhase) for state changes',
+      'Recommended for all new apps',
+    ],
+  }}
+/>
+
+```swift
+@main
+struct ShopApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { saveDraft() }
+        }
+    }
+}
+```
+
+## The view controller lifecycle (still essential)
+
+```swift
+class ProductListVC: UIViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Outlets connected; one-time setup here.
+    }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // Refresh data; about to be visible.
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // Start animations / analytics.
+    }
+}
+```
+
+Every SwiftUI view that's pushed via UIKit eventually lives inside a
+`UIHostingController` whose lifecycle drives `onAppear`/`task`/`onDisappear`
+under the hood.
+
+## Auto Layout in 30 seconds
+
+```swift
+NSLayoutConstraint.activate([
+    button.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+    button.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+    button.heightAnchor.constraint(equalToConstant: 48),
+])
+```
+
+When constraints conflict, Xcode logs `UIViewAlertForUnsatisfiableConstraints`
+and synthesizes an answer. We cover debugging by priority and `.required` vs
+`.defaultHigh` in detail.
+
+## Recommended tools & frameworks
+
+<LibraryGrid libraries={[
+  { name: 'Xcode', tagline: 'Apple IDE', description: 'Latest stable from the Mac App Store. Includes Simulator, Instruments, and Asset Catalog.', url: 'https://developer.apple.com/xcode/', recommended: true },
+  { name: 'SF Symbols', tagline: 'System icon library', description: '5,000+ vector icons that match the system font. Free Mac app from Apple.', url: 'https://developer.apple.com/sf-symbols/', recommended: true },
+  { name: 'Reveal', tagline: 'View hierarchy debugger', description: 'Powerful runtime inspector — better than Xcode\'s built-in for complex layouts.', url: 'https://revealapp.com' },
+  { name: 'SnapKit', tagline: 'DSL for Auto Layout', description: 'Optional. Cleaner than NSLayoutConstraint when you stay in UIKit.', url: 'https://github.com/SnapKit/SnapKit' },
+]} />
+
+## Key takeaways
+
+- The **AppDelegate / SceneDelegate / SwiftUI App** picture maps to the same OS lifecycle.
+- **`UIViewController` lifecycle methods fire in a deterministic order** — memorize them.
+- **Auto Layout is constraint solving** — priorities and `safeAreaLayoutGuide` are non-negotiable on modern iPhones.
+- **Sandbox boundaries** dictate where you can write files, what URLs you can hit, and what user data requires permission strings.
+
+## Practice exercises
+
+1. Build a UIKit screen with a `UICollectionView` using compositional layout — three sections with different cell sizes.
+2. Add a "Settings" scene to a SwiftUI app on macOS Catalyst.
+3. Reproduce a constraint conflict, then fix it by adjusting priorities.
+4. Inspect your app's sandbox via `FileManager.default.urls(for:in:)` and write a JSON file to `Documents/`.
+
+## Next module
+
+Continue to **[Module 03 · Modern UI with SwiftUI](/docs/swiftui/overview)** — declarative views, state, and the modern Apple UI stack.

@@ -1,0 +1,130 @@
+---
+id: overview
+title: Module 10 — Performance & Optimization
+sidebar_label: Overview
+description: Instruments, ARC, app launch tuning, memory & network optimization, App Thinning, and MetricKit.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 10 · 2 weeks · 2 topics</span>
+  <h2>Make it fast — measurably</h2>
+  <p>
+    Performance work without measurement is theater. This module teaches the
+    Apple-specific tools (Instruments, MetricKit, Xcode launch diagnostics)
+    and the patterns that move metrics in production.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Profiling & memory', description: 'Instruments deep dive (Time Profiler, Allocations, Leaks, Network), ARC fundamentals & retain-cycle hunting, weak/unowned/closure capture lists.' },
+    { title: 'Topic 2 · App launch, network, & binary', description: 'Pre-main vs post-main launch, dyld, +load and static initializers, image asset slicing, App Thinning, Bitcode (RIP), MetricKit telemetry, and HTTP/2 tuning.' },
+  ]}
+/>
+
+## ARC mental model
+
+```swift
+class ImageDownloader {
+    func fetch(_ url: URL, completion: @escaping (UIImage?) -> Void) {
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            // self is captured weakly; if released, callback no-ops
+            self?.cache(data)
+            completion(data.flatMap(UIImage.init(data:)))
+        }.resume()
+    }
+}
+```
+
+Closures capture `self` strongly by default. Use `[weak self]` or `[unowned self]`
+to break retain cycles. The Memory Graph debugger (Xcode → Debug → View Memory Graph)
+shows exactly which objects survive when they shouldn't.
+
+<Callout kind="tip" title="`unowned` vs `weak`">
+Use `unowned` only when the closure cannot outlive `self`. Otherwise default to
+`weak self` — it's safer and the optional unwrap cost is negligible.
+</Callout>
+
+## App launch matters most
+
+<ComparisonCard
+  left={{
+    label: 'Pre-main',
+    title: 'Before your code runs',
+    variant: 'neutral',
+    points: [
+      'dyld loads dynamic libraries',
+      'Objective-C runtime fixups',
+      '+load methods, static initializers',
+      'You optimize this by reducing dynamic frameworks',
+    ],
+  }}
+  right={{
+    label: 'Post-main',
+    title: 'Your code',
+    variant: 'neutral',
+    points: [
+      'application(didFinishLaunchingWithOptions:)',
+      'AppDelegate work, Firebase init, analytics SDKs',
+      'Defer everything not needed for the first frame',
+      'Measure with Instruments → App Launch template',
+    ],
+  }}
+/>
+
+Apple's guideline: launch under 400ms on the lowest-spec supported device.
+
+## MetricKit — production telemetry from Apple
+
+```swift
+final class MetricsObserver: NSObject, MXMetricManagerSubscriber {
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        for p in payloads {
+            // Disk writes, hangs, app launch metrics
+            log("hangs: \(p.applicationResponsivenessMetrics?.histogrammedApplicationHangTime)")
+        }
+    }
+}
+```
+
+Subscribe in `application(didFinishLaunchingWithOptions:)` and forward to
+your analytics / logging backend. Real metrics from real users, no SDK required.
+
+## Common wins, ranked by impact
+
+1. **Defer SDK initialization** to after the first frame.
+2. **Use compositional collection layouts** instead of nested stack views.
+3. **Precompute formatted strings** (`DateFormatter` is expensive — cache it).
+4. **Use `Image(uiImage:)` with downsampling** for large photos in lists.
+5. **Adopt baseline diffable data sources** — they're significantly faster than reload.
+
+## Recommended tools
+
+<LibraryGrid libraries={[
+  { name: 'Instruments', tagline: 'Apple profiler', description: 'Time Profiler, Allocations, Leaks, Network, App Launch, Energy. Free with Xcode.', url: 'https://help.apple.com/instruments/mac/current/', recommended: true },
+  { name: 'MetricKit', tagline: 'Production telemetry', description: 'On-device aggregation of launch, memory, CPU, hang, and disk metrics.', url: 'https://developer.apple.com/documentation/metrickit', recommended: true },
+  { name: 'Sentry', tagline: 'Crash + performance', description: 'Crashes, profiling, transaction tracing across iOS / backend.', url: 'https://sentry.io' },
+  { name: 'XCMetrics', tagline: 'Build-time perf', description: 'Spotify\'s tool to track Xcode build times across a team.', url: 'https://github.com/spotify/XCMetrics' },
+]} />
+
+## Key takeaways
+
+- **Profile before optimizing** — Instruments and the Memory Graph are your truth source.
+- **`weak self` is a discipline**, not an exception.
+- **Launch < 400ms** on the lowest-spec supported device — measure, then defer.
+- **MetricKit is free production telemetry** — wire it on day one.
+
+## Practice exercises
+
+1. Profile your sample app's launch with Instruments and shave 100ms off pre-main.
+2. Find and fix a retain cycle using the Memory Graph debugger.
+3. Wire MetricKit and forward hang reports to your analytics backend.
+4. Convert a UIKit list with `UITableView reloadData` to a `UICollectionViewDiffableDataSource`.
+
+## Next module
+
+Continue to **[Module 11 · App Store Connect & Publishing](/docs/publishing/overview)** — ship the binary.

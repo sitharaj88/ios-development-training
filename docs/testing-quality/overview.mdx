@@ -1,0 +1,156 @@
+---
+id: overview
+title: Module 09 — Testing & Quality Assurance
+sidebar_label: Overview
+description: XCTest, the new Swift Testing framework, XCUITest, snapshot testing, protocol-based mocks, TDD/BDD, and code coverage.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 09 · 2 weeks · 2 topics</span>
+  <h2>Confidence is a deliverable</h2>
+  <p>
+    Tests aren't a chore — they're how you ship without fear. This module covers
+    the full Apple test stack and the protocol-driven patterns that make
+    every layer testable.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Unit testing', description: 'XCTest fundamentals, the new Swift Testing framework (#expect, @Test, parameterized tests), protocol-based mocking, async testing, and combine/AsyncSequence assertions.' },
+    { title: 'Topic 2 · UI & integration testing', description: 'XCUITest with accessibility identifiers, page-object pattern, snapshot testing with swift-snapshot-testing, performance tests, and CI pipelines (Xcode Cloud / GitHub Actions).' },
+  ]}
+/>
+
+## XCTest vs Swift Testing
+
+<ComparisonCard
+  left={{
+    label: 'XCTest',
+    title: 'The classic',
+    variant: 'neutral',
+    points: [
+      'Subclass XCTestCase, methods start with test',
+      'XCTAssertEqual, XCTAssertThrowsError',
+      'setUp / tearDown lifecycle',
+      'Required for UI tests (XCUITest)',
+    ],
+  }}
+  right={{
+    label: 'Swift Testing',
+    title: 'Modern (Xcode 16+)',
+    variant: 'new',
+    points: [
+      '@Test functions, no class required',
+      '#expect(value == expected) with rich diff output',
+      '@Test(arguments: [...]) for parameterized tests',
+      'Tag-based organization, Tasks for parallelism',
+    ],
+  }}
+/>
+
+```swift
+import Testing
+
+struct CartTests {
+    @Test func emptyCartTotalIsZero() {
+        let cart = Cart()
+        #expect(cart.total == .zero)
+    }
+
+    @Test(arguments: [1, 5, 10])
+    func addingItemsIncreasesCount(_ count: Int) {
+        let cart = Cart()
+        for _ in 0..<count { cart.add(Product.sample) }
+        #expect(cart.items.count == count)
+    }
+}
+```
+
+## Protocol-driven mocking
+
+The pattern that makes everything testable: depend on protocols, inject in init.
+
+```swift
+final class FakeProductRepository: ProductRepository {
+    var stub: Result<[Product], Error> = .success([])
+    var fetchCallCount = 0
+    func fetchAll() async throws -> [Product] {
+        fetchCallCount += 1
+        return try stub.get()
+    }
+}
+
+@Test func showsLoadedStateOnSuccess() async {
+    let repo  = FakeProductRepository()
+    repo.stub = .success([.sample])
+    let vm    = ProductListViewModel(useCase: FetchProductsUseCase(repo: repo))
+    await vm.load()
+    if case .loaded(let p) = vm.state { #expect(p.count == 1) } else { Issue.record() }
+}
+```
+
+No mocking framework needed — Swift's protocols + value semantics do the job.
+
+## XCUITest in 30 seconds
+
+```swift
+final class CheckoutFlowUITests: XCTestCase {
+    func testHappyPath() {
+        let app = XCUIApplication()
+        app.launch()
+        app.buttons["addToCart"].tap()
+        app.buttons["checkout"].tap()
+        XCTAssertTrue(app.staticTexts["Order placed!"].waitForExistence(timeout: 3))
+    }
+}
+```
+
+Tag every interactive element with an `accessibilityIdentifier` — also wins
+you accessibility points for free.
+
+## Snapshot testing pins UI regressions
+
+```swift
+import SnapshotTesting
+
+@Test func productCardLooksRight() {
+    let view = ProductCard(product: .sample)
+    assertSnapshot(of: view, as: .image(layout: .device(config: .iPhone13)))
+}
+```
+
+Run once to record; every subsequent run diffs the image. Visual regressions
+fail loudly.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'swift-testing', tagline: 'Apple\'s new test framework', description: 'Built into Xcode 16. The future of iOS testing.', url: 'https://github.com/apple/swift-testing', recommended: true },
+  { name: 'swift-snapshot-testing', tagline: 'UI snapshot tests', description: 'Point-Free\'s framework — image, text, and trace snapshots.', url: 'https://github.com/pointfreeco/swift-snapshot-testing', recommended: true },
+  { name: 'Quick / Nimble', tagline: 'BDD for Swift', description: 'Describe/it spec syntax with rich matchers if you prefer BDD.', url: 'https://github.com/Quick/Quick' },
+  { name: 'Xcode Cloud', tagline: 'CI from Apple', description: 'Native CI tied to App Store Connect — first 25h/month free for paid developer accounts.', url: 'https://developer.apple.com/xcode-cloud/' },
+]} />
+
+## Key takeaways
+
+- **Swift Testing is the new default** — adopt it for new projects in Xcode 16+.
+- **Protocol-driven design = testability** — depend on protocols, inject implementations.
+- **XCUITest is for happy paths**, not exhaustive coverage. Lean on unit tests for logic.
+- **Snapshot tests catch visual regressions** that pure assertion tests miss.
+- **CI from day one** — Xcode Cloud or GitHub Actions, with mandatory PR checks.
+
+## Practice exercises
+
+1. Convert an existing XCTest suite to Swift Testing.
+2. Write a test for a token refresher actor that 100 concurrent callers de-duplicate correctly.
+3. Add snapshot tests for 3 key screens in light + dark + RTL.
+4. Set up Xcode Cloud or GitHub Actions to run tests on every PR.
+
+## Next module
+
+Continue to **[Module 10 · Performance & Optimization](/docs/performance/overview)** — make it fast.

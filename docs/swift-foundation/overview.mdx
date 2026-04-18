@@ -1,0 +1,192 @@
+---
+id: overview
+title: Module 01 — Swift Programming Foundation
+sidebar_label: Overview
+description: Master Swift — the language behind every Apple platform. Variables, optionals, OOP, protocols, generics, error handling, and async/await.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 01 · 3 weeks · 4 topics</span>
+  <h2>Swift is the language behind every modern Apple app</h2>
+  <p>
+    Before you can build an iOS app, you need fluency in Swift. This module covers
+    everything from <code>let</code> and <code>var</code> to actors and async/await —
+    the same primitives you'll use in every later module.
+  </p>
+</div>
+
+## Why Swift, and why so much detail up front
+
+Swift was designed to be safe (the type system catches whole classes of bugs at
+compile time), fast (no garbage collector — ARC instead), and expressive (value
+types, generics, protocols, pattern matching). Most of what makes Swift "feel
+right" once you're fluent is invisible if you skim the basics. So we don't.
+
+<Callout kind="tip" title="Already know another typed language?">
+If you know Kotlin, TypeScript, or Rust, much of Swift will feel familiar.
+We'll move briskly through syntax and spend most of our time on
+the *Swift-specific* mental models: value vs reference semantics, optionals,
+protocol-oriented programming, and Swift Concurrency.
+</Callout>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Swift Basics', description: 'Constants & variables, type inference, control flow, functions with named parameters, closures, tuples, and ranges.' },
+    { title: 'Topic 2 · OOP & Value Types', description: 'Structs vs classes, properties (stored, computed, lazy), methods, initializers, inheritance, deinit, and the meaning of value semantics.' },
+    { title: 'Topic 3 · Optionals & Safety', description: 'Optional binding (if let / guard let), optional chaining, nil-coalescing, force unwrapping (and when never to use it).' },
+    { title: 'Topic 4 · Advanced Swift', description: 'Generics, protocols & protocol-oriented programming, error handling with throws/Result, extensions, property wrappers, and async/await fundamentals.' },
+  ]}
+/>
+
+## Value types vs reference types — the foundational mental model
+
+This single distinction shapes how you think about every Swift program.
+
+<ComparisonCard
+  left={{
+    label: 'Struct (value type)',
+    title: 'Copied on assignment',
+    variant: 'neutral',
+    points: [
+      'Stack-allocated when possible',
+      'No shared mutable state — thread-safety by default',
+      'Equatable / Hashable conformance is trivial',
+      'Use for models, view state, configuration',
+      'SwiftUI views are structs',
+    ],
+  }}
+  right={{
+    label: 'Class (reference type)',
+    title: 'Shared via pointers',
+    variant: 'neutral',
+    points: [
+      'Heap-allocated, ARC-managed',
+      'Identity-based equality (===)',
+      'Inheritance, deinit, and identity matter',
+      'Use for shared services, view models, observable objects',
+      'Most UIKit & framework types are classes',
+    ],
+  }}
+/>
+
+```swift
+struct Point { var x: Int; var y: Int }
+class  Counter { var value = 0 }
+
+var a = Point(x: 1, y: 2)
+var b = a            // copy
+b.x = 99
+print(a.x)           // 1  ← unaffected
+
+let c = Counter()
+let d = c            // same instance
+d.value = 42
+print(c.value)       // 42 ← shared
+```
+
+Once this clicks, every other Swift design decision starts making sense.
+
+## Optionals are not "nullable" — they are a type
+
+```swift
+var name: String  = "Sitharaj"      // can never be nil
+var nick: String? = "S"             // Optional<String> — might be nil
+nick = nil                          // ok
+
+// Safe unwrap
+if let nick { print("Hi \(nick)") }
+
+// Early exit
+guard let nick else { return }
+
+// Default
+let display = nick ?? "anonymous"
+```
+
+The compiler refuses to let you call `nick.uppercased()` directly — you must
+unwrap first. Every `nil`-related crash you've seen in another language is
+prevented at compile time here.
+
+<Callout kind="warning" title="Avoid the bang">
+Force-unwrapping (`nick!`) crashes if `nick` is `nil`. It exists so you can
+escape the type system at boundaries (IBOutlets, fixtures), not as a shortcut.
+The rule of thumb: if you're typing `!`, ask whether `if let` or `guard let`
+would express your intent more honestly.
+</Callout>
+
+## Protocol-oriented programming
+
+Swift's standard library is built on protocols, not class hierarchies.
+Protocols + extensions + generics replace most of what other languages do
+with abstract base classes.
+
+```swift
+protocol Identifiable {
+    associatedtype ID: Hashable
+    var id: ID { get }
+}
+
+extension Array where Element: Identifiable {
+    func find(_ id: Element.ID) -> Element? {
+        first { $0.id == id }
+    }
+}
+```
+
+You'll lean on this pattern constantly when designing repositories,
+use cases, and view-model contracts in later modules.
+
+## Swift Concurrency — the primitive every modern API uses
+
+`async`/`await` is no longer optional knowledge — `URLSession`, `SwiftData`,
+`HealthKit`, and most third-party libraries now expose async APIs.
+
+```swift
+func fetchUser(id: UUID) async throws -> User {
+    let (data, _) = try await URLSession.shared.data(from: userURL(id))
+    return try JSONDecoder().decode(User.self, from: data)
+}
+
+Task {
+    do {
+        let user = try await fetchUser(id: id)
+        print(user.name)
+    } catch {
+        print("Failed: \(error)")
+    }
+}
+```
+
+We introduce it here at the syntax level. Module 12 covers actors,
+`AsyncSequence`, `TaskGroup`, and the runtime model in depth.
+
+## Recommended reading & references
+
+<LibraryGrid libraries={[
+  { name: 'The Swift Programming Language', tagline: 'Apple\'s official book', description: 'The definitive language reference. Free, regularly updated, and surprisingly readable.', url: 'https://docs.swift.org/swift-book/', recommended: true },
+  { name: 'Swift Evolution', tagline: 'Language proposals', description: 'Read accepted proposals to understand *why* features exist.', url: 'https://github.com/apple/swift-evolution' },
+  { name: 'Hacking with Swift — 100 Days', tagline: 'Free interactive course', description: 'Paul Hudson\'s structured 100-day programme. Excellent companion practice.', url: 'https://www.hackingwithswift.com/100/swiftui' },
+  { name: 'Swift Package Index', tagline: 'Discover packages', description: 'The npm/crates.io of Swift. Search, browse, and inspect package quality.', url: 'https://swiftpackageindex.com' },
+]} />
+
+## Key takeaways
+
+- Swift is **safe by default** — optionals, immutability with `let`, and ARC are not optional concepts.
+- **Structs are first** in modern Swift; reach for classes only when you need identity or shared mutable state.
+- **Protocols + extensions + generics** replace inheritance for most abstraction needs.
+- **`async`/`await`** is the new normal — every framework you'll touch exposes it.
+
+## Practice exercises
+
+1. Write a `Stack<Element>` generic struct with `push`, `pop`, and `peek`.
+2. Define a `Result<Success, Failure: Error>`-returning function that parses a `String` to `Int`.
+3. Create a `protocol Repository` with an associated type and a default implementation via extension.
+4. Convert a completion-handler-based function (e.g. `URLSession.dataTask`) to an `async throws` wrapper.
+
+## Next module
+
+Continue to **[Module 02 · iOS Fundamentals & UIKit](/docs/ios-fundamentals/overview)** to apply Swift to your first real iOS app.

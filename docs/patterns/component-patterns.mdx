@@ -1,0 +1,190 @@
+---
+id: component-patterns
+title: Component & View Patterns
+sidebar_label: Component Patterns
+description: Build reusable, composable SwiftUI components — slots, view modifiers, ButtonStyle, ViewBuilder, and the design system mindset.
+---
+
+import { Callout, StepList, ComparisonCard } from '@site/src/components/Doc';
+
+Reusable components turn a SwiftUI codebase from "every screen rolls its own
+button" into a coherent design system. This document collects the patterns.
+
+## Composition over configuration
+
+```swift
+// ❌ Configuration sprawl
+Button("Buy", action: buy)
+    .makeFancyButton(variant: .primary, size: .large, icon: "cart", trailing: true, badge: "New")
+
+// ✅ Slots and ViewBuilder
+PrimaryButton(action: buy) {
+    Label("Buy", systemImage: "cart")
+}
+```
+
+When a component grows beyond ~3 boolean toggles, switch from configuration
+to composition — accept `@ViewBuilder` content and let callers compose what
+they need.
+
+## ViewBuilder slots
+
+```swift
+struct Card<Header: View, Content: View>: View {
+    @ViewBuilder let header: Header
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header.font(.headline)
+            content
+        }
+        .padding()
+        .background(.background.secondary, in: .rect(cornerRadius: 16))
+    }
+}
+
+Card {
+    Text("Today")
+} content: {
+    Text("$42.50 spent across 3 categories")
+    Chart(...)
+}
+```
+
+Slots make components flexible without exploding the API surface.
+
+## Custom ViewModifier — encapsulate styling
+
+```swift
+struct CardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(16)
+            .background(.background.secondary, in: .rect(cornerRadius: 16))
+            .shadow(radius: 1, y: 1)
+    }
+}
+extension View {
+    func card() -> some View { modifier(CardModifier()) }
+}
+
+// Usage
+Text("Hello").card()
+```
+
+Use this for any styling that's repeated 3+ times.
+
+## ButtonStyle — first-class extension point
+
+```swift
+struct PrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(Color.accentColor, in: .capsule)
+            .foregroundStyle(.white)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == PrimaryButtonStyle {
+    static var primary: PrimaryButtonStyle { .init() }
+}
+
+Button("Buy", action: buy).buttonStyle(.primary)
+```
+
+The same recipe applies to `LabelStyle`, `ToggleStyle`, `ProgressViewStyle`,
+`MenuStyle`. Apple gave you these for a reason — use them.
+
+## Design tokens, not magic numbers
+
+```swift
+enum DS {
+    enum Spacing { static let xs: CGFloat = 4; static let s: CGFloat = 8; static let m: CGFloat = 16; static let l: CGFloat = 24 }
+    enum Radius  { static let s: CGFloat = 8; static let m: CGFloat = 12; static let l: CGFloat = 20 }
+    enum Color {
+        static let surface = SwiftUI.Color("Surface")
+        static let onSurface = SwiftUI.Color("OnSurface")
+    }
+}
+```
+
+Drop into a Swift Package called `DesignSystem` and import everywhere.
+Renaming a color or changing a corner radius becomes a single-file edit.
+
+## Previews drive component design
+
+```swift
+#Preview("Default") { PrimaryButtonExample() }
+#Preview("Pressed", traits: .sizeThatFitsLayout) { PrimaryButtonExample().disabled(true) }
+#Preview("Dark") { PrimaryButtonExample().preferredColorScheme(.dark) }
+#Preview("Dynamic Type XL") { PrimaryButtonExample().environment(\.dynamicTypeSize, .accessibility3) }
+```
+
+A component without 3+ previews isn't reusable yet — you don't know how it
+behaves under stress.
+
+## Accessibility from the first line
+
+<Callout kind="tip" title="Three labels matter">
+- **`accessibilityLabel`** — what is this? ("Delete item")
+- **`accessibilityHint`** — what happens? ("Removes from your cart")
+- **`accessibilityValue`** — current state? ("Quantity 3")
+</Callout>
+
+```swift
+Stepper(value: $qty, in: 1...10) { Text("Qty") }
+    .accessibilityLabel("Quantity")
+    .accessibilityValue("\(qty)")
+```
+
+## Container vs presentational components
+
+<ComparisonCard
+  left={{
+    label: 'Presentational',
+    title: 'Pure UI',
+    variant: 'neutral',
+    points: [
+      'Takes data via props (let)',
+      'No @Observable, no async work',
+      'Easy to preview & snapshot test',
+      'Examples: ProductRow, EmptyState, Card',
+    ],
+  }}
+  right={{
+    label: 'Container',
+    title: 'State + composition',
+    variant: 'neutral',
+    points: [
+      'Owns @State or @Bindable view model',
+      'Calls use cases / async work',
+      'Composes presentational children',
+      'Examples: ProductListView, CheckoutScreen',
+    ],
+  }}
+/>
+
+Keep ~80% of your views presentational. They're trivially reusable, testable
+in previews, and carry no business logic.
+
+## Adoption checklist
+
+<StepList
+  steps={[
+    { title: 'Step 1 — Extract a DS package', description: 'Create a DesignSystem Swift Package with tokens, ButtonStyle, custom modifiers.' },
+    { title: 'Step 2 — Build slot components first', description: 'Card, Sheet, EmptyState — accept ViewBuilder content, no configuration sprawl.' },
+    { title: 'Step 3 — Cover with previews', description: 'At least light/dark/dynamic-type previews per component.' },
+    { title: 'Step 4 — Snapshot test the system', description: 'swift-snapshot-testing on the design system catches accidental regressions.' },
+  ]}
+/>
+
+## Continue
+
+- [Design patterns](/docs/patterns/design-patterns)
+- [State patterns](/docs/patterns/state-patterns)

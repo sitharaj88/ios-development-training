@@ -1,0 +1,143 @@
+---
+id: clean-architecture
+title: Clean Architecture for iOS
+sidebar_label: Clean Architecture
+description: Apply Clean Architecture's dependency rule to iOS apps — Use Cases, Repositories, and the Domain core.
+---
+
+import { Callout, ComparisonCard, StepList } from '@site/src/components/Doc';
+
+Clean Architecture (Robert C. Martin) and Hexagonal Architecture (Alistair Cockburn)
+are the same idea: **inner layers know nothing of outer layers**. This document
+shows how the principle maps to a real Swift project.
+
+## The dependency rule
+
+> Source code dependencies point inward, toward higher-level policy.
+
+In an iOS app this means:
+
+- `ProductListView` (SwiftUI) depends on `ProductListViewModel`.
+- `ProductListViewModel` depends on `FetchProductsUseCase`.
+- `FetchProductsUseCase` depends on the `ProductRepository` *protocol*.
+- `ProductRepositoryImpl` depends on `URLSession`, `SwiftData`, etc.
+
+Domain types (`Product`, `FetchProductsUseCase`, `ProductRepository`) live in
+a Swift Package with **zero non-stdlib imports**. That is the litmus test.
+
+## Use Cases — single-purpose actions
+
+```swift
+// Domain
+struct CheckoutUseCase {
+    let cartRepo: CartRepository
+    let payment: PaymentGateway
+    let orders:  OrderRepository
+
+    func execute(method: PaymentMethod) async throws -> Order {
+        let cart = try await cartRepo.current()
+        try await payment.charge(amount: cart.total, method: method)
+        let order = Order(items: cart.items, total: cart.total, placedAt: .now)
+        try await orders.save(order)
+        try await cartRepo.clear()
+        return order
+    }
+}
+```
+
+The use case orchestrates protocols. Every dependency is injectable. There's
+no SwiftUI, no URLSession, no SwiftData visible.
+
+## Repositories isolate sources
+
+```swift
+// Domain
+protocol ProductRepository {
+    func fetchAll() async throws -> [Product]
+    func find(id: Product.ID) async throws -> Product?
+}
+
+// Data
+final class ProductRepositoryImpl: ProductRepository {
+    private let api: ProductAPI       // remote
+    private let cache: SwiftDataCache // local
+
+    func fetchAll() async throws -> [Product] {
+        if let local = try? cache.products(), !local.isEmpty { return local }
+        let remote = try await api.products()
+        try cache.replace(with: remote)
+        return remote
+    }
+
+    func find(id: Product.ID) async throws -> Product? {
+        try await cache.find(id: id) ?? api.product(id)
+    }
+}
+```
+
+The repository owns caching policy, mapping, and failover. Use cases don't care.
+
+## When MVVM alone is enough
+
+<ComparisonCard
+  left={{
+    label: 'Lean MVVM',
+    title: 'View ↔ ViewModel ↔ Repository',
+    variant: 'neutral',
+    points: [
+      'No Use Case layer',
+      'View model calls repository directly',
+      'Fine for CRUD apps and simple flows',
+      'Less plumbing; faster to ship',
+    ],
+  }}
+  right={{
+    label: 'Full Clean',
+    title: 'View ↔ ViewModel ↔ UseCase ↔ Repository',
+    variant: 'neutral',
+    points: [
+      'Use Cases isolate business rules',
+      'Reusable across multiple screens',
+      'Worth the boilerplate at ≥10 features',
+      'Required for deep test coverage of rules',
+    ],
+  }}
+/>
+
+## Mapping vs domain leaks
+
+DTOs (`ProductDTO` from JSON) are *not* domain entities (`Product`).
+Map at the repository boundary so that snake_case keys, missing fields, or
+backwards-incompatible API changes never leak past the data layer.
+
+```swift
+extension ProductDTO {
+    func toDomain() -> Product {
+        Product(id: .init(uuidString: id) ?? .init(),
+                name: name,
+                price: Decimal(string: price) ?? 0)
+    }
+}
+```
+
+<Callout kind="warning" title="Codable on domain types is a smell">
+If `Product` is `Codable`, you've coupled your domain to your wire format.
+The day a backend rename happens you'll need to migrate every screen. Map
+at the boundary instead.
+</Callout>
+
+## Practical adoption checklist
+
+<StepList
+  steps={[
+    { title: 'Step 1 — Carve out Domain', description: 'Create a Domain Swift Package with zero non-stdlib dependencies. Move entities + use cases + repository protocols.' },
+    { title: 'Step 2 — Move data sources', description: 'Create a Data target depending on Domain. Implement repository protocols here.' },
+    { title: 'Step 3 — Wire from Composition Root', description: 'Construct concrete implementations at app launch and inject into view models.' },
+    { title: 'Step 4 — Write a test', description: 'Inject a fake repository into one view model and assert state transitions. If this is hard, the layering is wrong.' },
+  ]}
+/>
+
+## Continue
+
+- [Project structure](/docs/architecture/project-structure)
+- [Design patterns reference](/docs/patterns/design-patterns)

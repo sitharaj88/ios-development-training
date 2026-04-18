@@ -1,0 +1,172 @@
+---
+id: overview
+title: Module 03 — Modern UI with SwiftUI
+sidebar_label: Overview
+description: SwiftUI in depth — declarative views, modifiers, state, navigation, animations, Combine, and SwiftUI ↔ UIKit interop.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, SwiftUIStateDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 03 · 4 weeks · 4 topics</span>
+  <h2>Declarative UI for every Apple platform</h2>
+  <p>
+    SwiftUI lets you describe <em>what the UI should look like for any state</em>,
+    and the framework figures out the diff and the rendering. This module covers
+    every concept you need to build production screens — from layout to navigation
+    to animation.
+  </p>
+</div>
+
+## What makes SwiftUI different
+
+Every SwiftUI view is a `struct` — a value, not a UIView. The framework calls
+`body` to compute a description of the UI for the current state, diffs it against
+the previous result, and only renders what changed.
+
+<Diagram
+  title="The SwiftUI render loop"
+  caption="State change → tracked-read invalidation → body recompute → diff → render. Only views whose tracked state actually changed re-evaluate."
+>
+  <SwiftUIStateDiagram />
+</Diagram>
+
+This is the same model as React or Jetpack Compose, with one critical advantage:
+SwiftUI tracks dependencies *automatically* via property wrappers, not by
+manually-listed dependency arrays.
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · SwiftUI Basics', description: 'View protocol, modifiers, layout containers (HStack, VStack, ZStack, Grid), spacing, alignment, and the magic of "some View".' },
+    { title: 'Topic 2 · State & Data Flow', description: '@State, @Binding, @Observable, @Environment, @Bindable. When to use each, and how SwiftUI builds the dependency graph.' },
+    { title: 'Topic 3 · Navigation & Lists', description: 'NavigationStack, NavigationSplitView, sheet/fullScreenCover/popover, List with sections, ForEach, swipe actions, and pull-to-refresh.' },
+    { title: 'Topic 4 · Animations & Interop', description: 'Implicit/explicit animations, transitions, matchedGeometryEffect, Canvas drawing, and bridging UIViewRepresentable / UIViewControllerRepresentable.' },
+  ]}
+/>
+
+## State property wrappers — choose correctly
+
+<ComparisonCard
+  left={{
+    label: 'Local state',
+    title: '@State and @Binding',
+    variant: 'neutral',
+    points: [
+      '@State for view-local truth (selection, toggle, text field)',
+      '@Binding to pass write-access to a child',
+      'Stored on view identity, persists across body recomputes',
+      'Use value-type payloads (String, Int, struct)',
+    ],
+  }}
+  right={{
+    label: 'Shared model',
+    title: '@Observable (iOS 17+)',
+    variant: 'new',
+    points: [
+      'Macro that synthesizes change tracking',
+      'Replaces ObservableObject + @Published',
+      'Dependency graph tracks individual property reads',
+      'Inject via @Environment or @Bindable for two-way',
+    ],
+  }}
+/>
+
+```swift
+@Observable
+final class Cart {
+    var items: [CartItem] = []
+    var total: Decimal { items.reduce(0) { $0 + $1.price } }
+}
+
+struct CartView: View {
+    @Bindable var cart: Cart   // two-way bindings
+    var body: some View {
+        List(cart.items) { item in
+            Text(item.name)
+        }
+        Text(cart.total, format: .currency(code: "USD"))
+    }
+}
+```
+
+## Modern navigation
+
+`NavigationView` is deprecated. Use `NavigationStack` (iOS 16+) for a single-column
+experience and `NavigationSplitView` for iPad/Mac multi-column UI.
+
+```swift
+NavigationStack(path: $path) {
+    ProductList()
+        .navigationDestination(for: Product.self) { product in
+            ProductDetail(product: product)
+        }
+        .navigationDestination(for: CartRoute.self) { _ in
+            CartView(cart: cart)
+        }
+}
+```
+
+Push `path.append(product)` from anywhere in the tree. The state is the source
+of truth; the UI follows.
+
+## Animations are state-driven
+
+```swift
+@State private var expanded = false
+
+Image(systemName: "chevron.right")
+    .rotationEffect(.degrees(expanded ? 90 : 0))
+    .animation(.spring(duration: 0.3), value: expanded)
+```
+
+The view describes the *what*; SwiftUI interpolates the *how*. We cover
+transitions, `matchedGeometryEffect`, and the Canvas API for custom drawing.
+
+## When to drop down to UIKit
+
+<Callout kind="info" title="UIKit interop is a feature, not a workaround">
+SwiftUI provides `UIViewRepresentable` and `UIViewControllerRepresentable` for
+this exact purpose. Use them for: `MFMessageComposeViewController`, advanced
+camera UI, `WKWebView`, complex `UICollectionView` layouts, or vendor SDKs
+that ship UIKit-only.
+</Callout>
+
+```swift
+struct WebView: UIViewRepresentable {
+    let url: URL
+    func makeUIView(context: Context) -> WKWebView { WKWebView() }
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        webView.load(URLRequest(url: url))
+    }
+}
+```
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'SwiftUI Introspect', tagline: 'Reach into UIKit', description: 'Access the underlying UIScrollView, UITextField, etc. for things SwiftUI doesn\'t expose.', url: 'https://github.com/siteline/SwiftUIIntrospect' },
+  { name: 'Pow', tagline: 'Pre-built transitions', description: 'Beautiful drop-in animations and transitions for SwiftUI.', url: 'https://movingparts.io/pow' },
+  { name: 'Charts', tagline: 'Apple\'s charting framework', description: 'Built-in since iOS 16. Declarative bar/line/area charts with full accessibility.', url: 'https://developer.apple.com/documentation/charts', recommended: true },
+  { name: 'Lottie iOS', tagline: 'After Effects animations', description: 'Render JSON-exported animations natively. SwiftUI wrappers available.', url: 'https://github.com/airbnb/lottie-ios' },
+]} />
+
+## Key takeaways
+
+- SwiftUI views are **values that describe state-to-UI**, not heavyweight UIView instances.
+- Use **`@State` for local, `@Observable` for shared** — that covers 95% of cases.
+- **`NavigationStack` with a typed path** is the modern navigation API.
+- **Animations are declarative** — animate values, not properties.
+- **UIKit interop is a tool**, not a fallback. Use it whenever it's the cleanest answer.
+
+## Practice exercises
+
+1. Build a master-detail screen using `NavigationSplitView` for iPad.
+2. Implement pull-to-refresh on a `List` backed by an `async` data load.
+3. Animate a like-button "burst" using `matchedGeometryEffect`.
+4. Wrap a `MKMapView` in a `UIViewRepresentable` and pass annotation updates from SwiftUI.
+
+## Next module
+
+Continue to **[Module 04 · Architecture & Design Patterns](/docs/architecture-patterns/overview)** to layer your SwiftUI app for maintainability and testability.

@@ -1,0 +1,137 @@
+---
+id: overview
+title: Module 12 — Advanced & Trending Topics
+sidebar_label: Overview
+description: Swift Concurrency depth (actors, AsyncSequence), Core ML, ARKit, HealthKit, watchOS, visionOS, accessibility, and adaptive design.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, SwiftConcurrencyDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 12 · 3 weeks · 3 topics</span>
+  <h2>The Apple ecosystem, end to end</h2>
+  <p>
+    Once you can ship an iPhone app, the same skills unlock Apple Watch,
+    Vision Pro, on-device ML, AR, and a dozen specialized frameworks. This
+    module is the survey course of advanced Apple platform development.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Swift Concurrency in depth', description: 'Actors and reentrancy, @MainActor isolation, AsyncSequence + AsyncStream, structured concurrency with TaskGroup, custom executors, and Sendable checking.' },
+    { title: 'Topic 2 · ML, AR, and HealthKit', description: 'Core ML model integration, Vision framework, ARKit + RealityKit basics, HealthKit data types & background delivery, Charts framework.' },
+    { title: 'Topic 3 · watchOS, visionOS, accessibility', description: 'Apple Watch independent + companion apps, complications, visionOS spatial design, RealityView, VoiceOver, Dynamic Type, and inclusive design.' },
+  ]}
+/>
+
+## Swift Concurrency — the full picture
+
+<Diagram
+  title="Swift Concurrency primitives"
+  caption="Tasks own work; async functions suspend cooperatively; actors isolate state; @MainActor pins to UI; TaskGroup enables structured parallelism."
+>
+  <SwiftConcurrencyDiagram />
+</Diagram>
+
+```swift
+actor RateLimiter {
+    private var lastFire: Date = .distantPast
+    private let interval: TimeInterval
+
+    init(perSecond: Double) { interval = 1.0 / perSecond }
+
+    func fire() async {
+        let elapsed = Date().timeIntervalSince(lastFire)
+        if elapsed < interval {
+            try? await Task.sleep(for: .seconds(interval - elapsed))
+        }
+        lastFire = Date()
+    }
+}
+```
+
+Actors serialize access to mutable state; the compiler refuses to let
+non-Sendable values cross actor boundaries.
+
+## On-device ML with Core ML
+
+```swift
+import CoreML
+import Vision
+
+let model = try VNCoreMLModel(for: PetClassifier(configuration: .init()).model)
+let request = VNCoreMLRequest(model: model) { req, _ in
+    if let top = (req.results as? [VNClassificationObservation])?.first {
+        print("\(top.identifier): \(top.confidence)")
+    }
+}
+try VNImageRequestHandler(cgImage: image).perform([request])
+```
+
+Core ML runs on the Neural Engine — fast, private, no network required.
+
+## visionOS at a glance
+
+```swift
+@main
+struct GalaxyApp: App {
+    var body: some Scene {
+        WindowGroup { ContentView() }              // 2D window
+        ImmersiveSpace(id: "Galaxy") {
+            RealityView { content in
+                content.add(galaxyEntity())        // 3D scene
+            }
+        }
+    }
+}
+```
+
+SwiftUI extends naturally into 3D — windows become `WindowGroup`s,
+3D scenes are `ImmersiveSpace`s, and `RealityView` is the spatial canvas.
+
+## Accessibility — non-optional
+
+<Callout kind="warning" title="Accessibility is a launch blocker, not a polish task">
+Apple App Store reviewers actively test VoiceOver. Apps with critical buttons
+that don't speak get rejected. Build accessibility in from day one.
+</Callout>
+
+```swift
+Image("trash")
+    .accessibilityLabel("Delete item")
+    .accessibilityAddTraits(.isButton)
+    .accessibilityHint("Removes this from your cart")
+```
+
+Use Dynamic Type sizes, support landscape and split view, and test with
+VoiceOver enabled (Settings → Accessibility → VoiceOver).
+
+## Recommended frameworks
+
+<LibraryGrid libraries={[
+  { name: 'Core ML', tagline: 'On-device ML', description: 'Run trained models on the Neural Engine. Convert from PyTorch / TensorFlow with coremltools.', url: 'https://developer.apple.com/documentation/coreml', recommended: true },
+  { name: 'RealityKit', tagline: 'AR / spatial', description: 'Apple\'s 3D rendering engine for ARKit and visionOS — modern replacement for SceneKit.', url: 'https://developer.apple.com/documentation/realitykit' },
+  { name: 'HealthKit', tagline: 'Health & fitness data', description: 'Read/write 100+ data types, background delivery, secure storage in the Health app.', url: 'https://developer.apple.com/documentation/healthkit' },
+  { name: 'WatchConnectivity', tagline: 'iPhone ↔ Watch', description: 'Send context, files, and live messages between an iPhone app and its Watch app.', url: 'https://developer.apple.com/documentation/watchconnectivity' },
+]} />
+
+## Key takeaways
+
+- **Actors + Sendable** are the future of safe shared state — the compiler enforces it.
+- **Core ML runs on the Neural Engine** — embarrassingly fast, fully private.
+- **visionOS is SwiftUI + RealityKit** — your existing skills extend.
+- **Accessibility is shipped, not added later** — VoiceOver, Dynamic Type, and contrast from the first commit.
+
+## Practice exercises
+
+1. Convert a callback-based legacy API to `AsyncStream`.
+2. Build a Core ML pet-vs-not classifier from a publicly available model.
+3. Add a watchOS companion target that mirrors today's expense total.
+4. Audit a screen with VoiceOver and fix every issue.
+
+## Next module
+
+Continue to **[Module 13 · Package Management & Collaboration](/docs/package-collaboration/overview)** — ship code as a team.

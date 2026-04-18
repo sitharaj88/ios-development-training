@@ -1,0 +1,167 @@
+---
+id: project-structure
+title: Project & Module Structure
+sidebar_label: Project Structure
+description: How to lay out an iOS Xcode project — folders, Swift Packages, and the Composition Root.
+---
+
+import { Callout, StepList, ComparisonCard } from '@site/src/components/Doc';
+
+Folder layout is one of the few decisions you'll regret most if made carelessly.
+This document shows the layout this curriculum uses, and the reasoning behind it.
+
+## Single-target layout (small apps)
+
+```
+MyApp/
+├── App/
+│   ├── MyAppApp.swift          # @main entry
+│   ├── AppContainer.swift      # Composition root (DI wiring)
+│   └── Info.plist
+├── Features/
+│   ├── ProductList/
+│   │   ├── ProductListView.swift
+│   │   ├── ProductListViewModel.swift
+│   │   └── ProductRow.swift
+│   └── Cart/
+├── Domain/
+│   ├── Entities/
+│   ├── UseCases/
+│   └── Repositories/           # protocols only
+├── Data/
+│   ├── API/
+│   ├── Persistence/
+│   └── Repositories/           # protocol implementations
+├── Resources/
+│   ├── Assets.xcassets
+│   └── Localizable.strings
+└── Tests/
+    ├── DomainTests/
+    └── FeatureTests/
+```
+
+Group **by feature**, not by file type. `ProductListView`, `ProductListViewModel`,
+and `ProductRow` belong together. Splitting them across `Views/`, `ViewModels/`,
+and `Components/` folders forces context switches every time you work on a feature.
+
+## Modular layout (large apps)
+
+For apps over ~30k lines or with multiple platforms (iOS + Watch + Mac), split
+into Swift Packages:
+
+```
+MyApp/
+├── MyApp.xcodeproj
+├── App/                              # thin shell target
+└── Packages/
+    ├── Domain/
+    │   └── Package.swift             # zero non-stdlib deps
+    ├── Data/
+    │   └── Package.swift             # depends on Domain
+    ├── DesignSystem/
+    │   └── Package.swift             # buttons, colors, typography
+    ├── Features/
+    │   ├── ProductCatalog/
+    │   ├── Cart/
+    │   └── Checkout/
+    └── Networking/
+```
+
+Each package is independently testable, has its own `@testable import`, and
+can be opened in its own Xcode window for fast iteration.
+
+<Callout kind="tip" title="Use Tuist or XcodeGen for large monorepos">
+Hand-edited `.xcodeproj` files merge poorly. Tuist and XcodeGen generate them
+from declarative manifests — your team will thank you.
+</Callout>
+
+## The Composition Root
+
+A single place where concrete dependencies are constructed and wired together,
+typically at app launch.
+
+```swift
+@main
+struct MyApp: App {
+    let container = AppContainer()
+    var body: some Scene {
+        WindowGroup {
+            RootView(viewModel: container.makeRootViewModel())
+        }
+    }
+}
+
+final class AppContainer {
+    private lazy var api      = ProductAPI(session: .shared)
+    private lazy var cache    = SwiftDataCache()
+    private lazy var products: ProductRepository = ProductRepositoryImpl(api: api, cache: cache)
+
+    func makeRootViewModel() -> RootViewModel {
+        RootViewModel(useCase: FetchProductsUseCase(repo: products))
+    }
+}
+```
+
+This is the only place that knows the concrete `ProductRepositoryImpl` exists.
+Every other file depends on the `ProductRepository` protocol.
+
+## Folder vs Group vs Filesystem
+
+<ComparisonCard
+  left={{
+    label: 'Group (yellow)',
+    title: 'Logical only',
+    variant: 'old',
+    points: [
+      'Doesn\'t touch the filesystem',
+      'Group hierarchy ≠ folder hierarchy',
+      'Confuses Git, code search, and new team members',
+      'Avoid in modern projects',
+    ],
+  }}
+  right={{
+    label: 'Folder reference (blue)',
+    title: 'Mirrors disk',
+    variant: 'new',
+    points: [
+      'Folder name = filesystem name',
+      'Move a file in Finder, Xcode follows',
+      'Required for SPM-based modules',
+      'Default for new Xcode projects',
+    ],
+  }}
+/>
+
+## Test folder layout
+
+Mirror the source layout:
+
+```
+Tests/
+├── DomainTests/
+│   └── UseCases/
+│       └── CheckoutUseCaseTests.swift
+├── DataTests/
+│   └── Repositories/
+└── FeatureTests/
+    └── ProductList/
+```
+
+Each test file imports only what it needs. Rule of thumb: if a Domain test
+needs `import UIKit`, the layering is wrong.
+
+## Adoption checklist
+
+<StepList
+  steps={[
+    { title: 'Step 1 — Group by feature', description: 'Move related View, ViewModel, and helpers into one folder per feature.' },
+    { title: 'Step 2 — Extract Domain', description: 'Create a Domain folder (or Swift Package) with zero non-stdlib imports.' },
+    { title: 'Step 3 — Centralize wiring', description: 'Add an AppContainer (or use Factory / Swinject) as the Composition Root.' },
+    { title: 'Step 4 — Modularize when painful', description: 'When build times exceed 30s on a clean build or merge conflicts spike, split features into Swift Packages.' },
+  ]}
+/>
+
+## Continue
+
+- [Architecture overview](/docs/architecture/overview)
+- [Design patterns reference](/docs/patterns/design-patterns)

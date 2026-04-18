@@ -1,0 +1,134 @@
+---
+id: overview
+title: Module 07 — Firebase & Backend Services
+sidebar_label: Overview
+description: Apple/Google sign-in, Firestore, Cloud Storage, APNs push notifications, Analytics, Crashlytics + dSYM, Remote Config, App Distribution.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 07 · 3 weeks · 3 topics</span>
+  <h2>A backend without a backend</h2>
+  <p>
+    Firebase gives indie developers and small teams an entire backend
+    (auth, real-time database, storage, push, analytics, crash reporting,
+    config) for the price of "mostly free". This module covers the iOS-specific
+    integration patterns and the gotchas that bite in production.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Auth & user identity', description: 'Sign in with Apple (required for App Store), Google sign-in, email/password, phone, anonymous auth, custom claims, and account linking.' },
+    { title: 'Topic 2 · Firestore & Cloud Storage', description: 'Real-time listeners, transactions, batch writes, security rules, offline persistence, image upload with progress, and signed URLs.' },
+    { title: 'Topic 3 · Push, Analytics & Crashlytics', description: 'APNs setup, FCM topics, payload schemas, rich notifications, custom events, conversion funnels, dSYM upload, and Remote Config + A/B testing.' },
+  ]}
+/>
+
+## Sign in with Apple — non-negotiable
+
+App Store Review Guideline 4.8 requires Sign in with Apple if you offer any
+third-party social login. Implement it first.
+
+```swift
+import AuthenticationServices
+
+struct SignInWithAppleButton: UIViewRepresentable {
+    let onResult: (Result<ASAuthorizationAppleIDCredential, Error>) -> Void
+    // ...wires ASAuthorizationController + ASAuthorizationAppleIDProvider
+}
+```
+
+Pair with Firebase Auth's `OAuthProvider(providerID: "apple.com")` to get a
+Firebase user back, with the Apple identity token verified server-side.
+
+## Firestore listeners are the magic
+
+```swift
+db.collection("orders")
+  .whereField("userId", isEqualTo: uid)
+  .addSnapshotListener { snap, error in
+      let orders = snap?.documents.compactMap { try? $0.data(as: Order.self) } ?? []
+      Task { @MainActor in self.orders = orders }
+  }
+```
+
+Every device watching that query gets pushed updates within ~100ms.
+Combine with offline persistence (`Firestore.firestore().settings.isPersistenceEnabled = true`)
+and your app feels instant even on the subway.
+
+<Callout kind="warning" title="Security rules are not optional">
+A Firestore project with `allow read, write: if true;` is a public database.
+Write your rules and test them with the emulator suite *before* shipping.
+</Callout>
+
+## APNs / FCM in production
+
+<ComparisonCard
+  left={{
+    label: 'Direct APNs',
+    title: 'Apple Push Notification service',
+    variant: 'neutral',
+    points: [
+      'Apple-managed transport',
+      'Token auth (.p8) preferred over certificate',
+      'Server signs JWT and POSTs to Apple',
+      'Best for backend teams already operating servers',
+    ],
+  }}
+  right={{
+    label: 'Via Firebase',
+    title: 'Firebase Cloud Messaging',
+    variant: 'new',
+    points: [
+      'Topic-based fan-out',
+      'Single SDK for iOS + Android + Web',
+      'Console + Admin SDK + REST',
+      'Recommended for most teams',
+    ],
+  }}
+/>
+
+## Crashlytics that's actually useful
+
+Two non-negotiables:
+
+1. **Upload dSYMs** on every release — without them stack traces are hex addresses.
+2. **Set user identifiers** so you can correlate crashes to support tickets:
+
+```swift
+Crashlytics.crashlytics().setUserID(currentUser.id)
+Crashlytics.crashlytics().setCustomValue(appBuild, forKey: "build")
+```
+
+Use the run-script build phase that Firebase ships, or upload via Fastlane in CI.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Firebase iOS SDK', tagline: 'Official', description: 'Auth, Firestore, Storage, Messaging, Analytics, Crashlytics, Remote Config, Functions.', url: 'https://github.com/firebase/firebase-ios-sdk', recommended: true },
+  { name: 'GoogleSignIn', tagline: 'Google OAuth', description: 'Required if you offer Google sign-in. Pairs with Firebase Auth.', url: 'https://github.com/google/GoogleSignIn-iOS' },
+  { name: 'OneSignal', tagline: 'Push alternative', description: 'Free push & in-app messaging if Firebase isn\'t a fit. Cross-platform.', url: 'https://onesignal.com' },
+  { name: 'Supabase Swift', tagline: 'Open-source alt', description: 'Postgres, auth, storage, real-time. Open-source Firebase alternative.', url: 'https://github.com/supabase/supabase-swift' },
+]} />
+
+## Key takeaways
+
+- **Sign in with Apple is mandatory** if you offer any third-party login.
+- **Firestore listeners drive reactive UIs cheaply** — embrace them.
+- **Security rules are part of the app** — write them, test them, deploy them with the binary.
+- **Crash reports without dSYMs are useless** — automate dSYM upload in CI.
+
+## Practice exercises
+
+1. Implement Sign in with Apple + Firebase Auth + account linking with email/password.
+2. Build a real-time chat list with Firestore snapshot listeners and offline persistence.
+3. Send a rich push notification with image attachment via FCM.
+4. Configure Remote Config + A/B test for an onboarding flow.
+
+## Next module
+
+Continue to **[Module 08 · Advanced iOS Components](/docs/advanced-components/overview)** — extensions, background tasks, Maps, AVFoundation, and Widgets.

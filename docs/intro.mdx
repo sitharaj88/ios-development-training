@@ -1,0 +1,145 @@
+---
+id: intro
+title: Welcome to iOS Development Training
+sidebar_label: Welcome
+slug: /intro
+description: A complete, production-focused iOS development curriculum — Swift, SwiftUI, UIKit, architecture, Apple frameworks, performance, and App Store delivery.
+---
+
+import { Callout, FeatureGrid, StepList, ComparisonCard, IOSArchDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Welcome</span>
+  <h2>Build production iOS apps the Apple-recommended way</h2>
+  <p>
+    13 modules · 72+ topics · 32 weeks · 115 hours · 5 capstone projects.
+    A modern, end-to-end roadmap from first <code>print("Hello, world!")</code> to
+    a TestFlight build in reviewers' hands.
+  </p>
+</div>
+
+## What this guide is
+
+This is the same curriculum I teach to professional engineers transitioning into
+the Apple ecosystem — refined into a self-paced reference site.
+Every module is built around three principles:
+
+1. **Explain the *why* first.** The Apple platform is opinionated. Understanding *why*
+   `@Observable` replaced `ObservableObject`, *why* SwiftUI re-evaluates `body`, or
+   *why* `actor` exists in the language shapes every architectural decision you'll make.
+2. **Show production-grade code, not toys.** Every example assumes you're building
+   something that real users will install — error handling, accessibility,
+   localization, and testability are first-class concerns.
+3. **End at the App Store.** The curriculum doesn't stop when the simulator runs.
+   Code signing, TestFlight, App Store Connect, StoreKit 2, and ASO are part of
+   the path.
+
+<Callout kind="tip" title="If you came from another platform">
+Coming from Android (Kotlin/Compose), React Native, Flutter, or web? You'll feel
+at home faster than you expect — Swift's optionals map to Kotlin's nullables,
+SwiftUI's declarative model echoes Compose and React, and Swift Concurrency
+parallels Kotlin coroutines. We'll point out the analogies as we go.
+</Callout>
+
+## The shape of a modern iOS app
+
+Before diving into modules, here is the architectural skeleton every app you build
+in this curriculum will share:
+
+<Diagram
+  title="Layered architecture for a production iOS app"
+  caption="SwiftUI views drive @Observable view models, which call use cases, which depend on repository protocols backed by remote and local sources."
+>
+  <IOSArchDiagram />
+</Diagram>
+
+This layering is not academic — it determines what's testable, what's swappable,
+and what happens when the design team asks for a complete UI overhaul or the
+backend team migrates from REST to GraphQL.
+
+## Old iOS vs. modern iOS
+
+If you've seen iOS code from 2015–2019, the changes since are sweeping:
+
+<ComparisonCard
+  left={{
+    label: 'Legacy iOS (≈ 2015–2019)',
+    title: 'UIKit + delegates + closures',
+    variant: 'old',
+    points: [
+      'Storyboards / XIBs with segues',
+      'View controllers with massive view code',
+      'Manual memory management mindset (retain cycles everywhere)',
+      'Completion-handler callbacks for every async call',
+      'KVO and NotificationCenter for state changes',
+      'Objective-C interop concerns front and center',
+      'CocoaPods only; no first-party package manager',
+    ],
+  }}
+  right={{
+    label: 'Modern iOS (2024+)',
+    title: 'Swift + SwiftUI + Concurrency',
+    variant: 'new',
+    points: [
+      'SwiftUI views; previews replace storyboards',
+      '@Observable view models with tracked dependencies',
+      'Compiler-enforced Sendable & data-race safety',
+      'async / await / Task / TaskGroup',
+      'Combine and AsyncSequence for reactive streams',
+      'Pure Swift end-to-end (Obj-C only at framework boundaries)',
+      'Swift Package Manager native in Xcode',
+    ],
+  }}
+/>
+
+## How the curriculum is organized
+
+<StepList
+  steps={[
+    { title: 'Module 01 · Swift Foundation', description: 'Variables, OOP, optionals, generics, error handling, Result, async/await — the language itself.' },
+    { title: 'Module 02 · iOS Fundamentals & UIKit', description: 'Sandbox, app lifecycle, Xcode, view controllers, Auto Layout, navigation, collection views.' },
+    { title: 'Module 03 · Modern UI with SwiftUI', description: 'Declarative views, state, navigation stacks, animations, Combine, UIKit interop.' },
+    { title: 'Module 04 · Architecture & Patterns', description: 'MVVM, Clean Architecture, Repository, Coordinator, dependency injection, Swift Packages.' },
+    { title: 'Module 05 · Data Persistence', description: 'UserDefaults, Core Data, SwiftData, Keychain, CloudKit.' },
+    { title: 'Module 06 · Networking & APIs', description: 'URLSession, Codable, Alamofire, WebSocket, GraphQL, OAuth 2.0.' },
+    { title: 'Module 07 · Firebase & Cloud', description: 'Auth, Firestore, Cloud Storage, APNs push, Analytics, Crashlytics, Remote Config.' },
+    { title: 'Module 08 · Advanced iOS Components', description: 'Extensions, BGTaskScheduler, Maps, AVFoundation, Bluetooth, WidgetKit, App Clips.' },
+    { title: 'Module 09 · Testing & Quality', description: 'XCTest, Swift Testing, XCUITest, snapshot tests, mocking, TDD, coverage.' },
+    { title: 'Module 10 · Performance', description: 'Instruments, ARC, app launch tuning, network optimization, App Thinning, MetricKit.' },
+    { title: 'Module 11 · Publishing', description: 'Certificates, provisioning, TestFlight, App Store, In-App Purchases, StoreKit 2, ASO.' },
+    { title: 'Module 12 · Advanced & Trending', description: 'Swift Concurrency deep dive, Core ML, ARKit, HealthKit, watchOS, visionOS, accessibility.' },
+    { title: 'Module 13 · Package Mgmt & Collaboration', description: 'SPM, CocoaPods, Git workflows, Xcode Cloud, Fastlane.' },
+  ]}
+/>
+
+## Five capstone projects
+
+Every concept in this curriculum is reinforced by a real, shippable project.
+
+<FeatureGrid columns={3} features={[
+  { icon: '🛒', title: 'E-Commerce App', description: 'Catalog, cart, Apple Pay checkout — exercises networking, persistence, MVVM, and StoreKit.' },
+  { icon: '💬', title: 'Social Media App', description: 'Real-time feed, chat with Firestore, push notifications via APNs, media upload.' },
+  { icon: '💪', title: 'Health & Fitness', description: 'HealthKit integration, Charts, workout tracking, Apple Watch companion app.' },
+  { icon: '🕶️', title: 'AR Shopping', description: 'ARKit + RealityKit room placement, 3D model loading, SwiftUI overlay UI.' },
+  { icon: '💰', title: 'Expense Tracker', description: 'SwiftData persistence, Charts framework, Home Screen and Lock Screen widgets.' },
+]} />
+
+## How to use this site
+
+- **Sequential learners:** start with Module 01 and follow the sidebar in order.
+- **Reference seekers:** every module is self-contained and cross-linked. Use the
+  search bar (top right) for fast lookups.
+- **Architects:** start with the [Architecture Guide](/docs/architecture/overview) and
+  the [Design Patterns](/docs/patterns/design-patterns) reference.
+
+<Callout kind="success" title="You're ready">
+Open Module 01 from the sidebar and start with Swift fundamentals. Each module
+ends with a "Next module" link so you always know where to go.
+</Callout>
+
+## Connect with the instructor
+
+- Website: <a href="https://www.sitharaj.in" target="_blank" rel="noopener noreferrer">sitharaj.in</a>
+- GitHub: <a href="https://github.com/sitharaj88" target="_blank" rel="noopener noreferrer">github.com/sitharaj88</a>
+- LinkedIn: <a href="https://linkedin.com/in/sitharaj08" target="_blank" rel="noopener noreferrer">linkedin.com/in/sitharaj08</a>
+- Email: <a href="mailto:sitharaj.info@gmail.com">sitharaj.info@gmail.com</a>

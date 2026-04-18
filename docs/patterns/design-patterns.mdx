@@ -1,0 +1,158 @@
+---
+id: design-patterns
+title: Design Patterns for iOS
+sidebar_label: Design Patterns
+description: The classic and Swift-specific design patterns that show up in every iOS codebase — when to use each.
+---
+
+import { Callout, ComparisonCard, StepList } from '@site/src/components/Doc';
+
+This is a working developer's reference, not an academic survey. Each pattern
+includes the problem it solves, idiomatic Swift code, and when to *not* use it.
+
+## Singleton
+
+```swift
+final class AnalyticsService {
+    static let shared = AnalyticsService()
+    private init() {}
+    func track(_ event: String) { /* ... */ }
+}
+```
+
+**Use when:** truly one-per-process system services (logger, analytics,
+notification center). **Avoid for:** anything you'd ever want to mock or
+swap — that's where dependency injection wins.
+
+## Factory
+
+```swift
+enum ViewModelFactory {
+    static func makeCart(container: AppContainer) -> CartViewModel {
+        CartViewModel(repo: container.cartRepository, payment: container.paymentGateway)
+    }
+}
+```
+
+**Use when:** construction logic is complex enough to deserve its own home but
+not enough to need a full DI container.
+
+## Coordinator
+
+```swift
+@Observable
+final class ShopCoordinator {
+    var path = NavigationPath()
+    let useCases: UseCases
+
+    func openProduct(_ product: Product) { path.append(product) }
+    func openCart() { path.append(CartRoute()) }
+}
+```
+
+**Use when:** navigation rules cross features (deep links, conditional flows,
+analytics on every transition). For single-feature flows, a `NavigationStack`
+with local `@State` path is simpler.
+
+## Observer (Combine + AsyncSequence)
+
+<ComparisonCard
+  left={{
+    label: 'Combine',
+    title: 'Reactive streams',
+    variant: 'neutral',
+    points: [
+      'Mature, full operator catalogue',
+      'Required for some Apple frameworks (NotificationCenter.publisher)',
+      'Memory model: AnyCancellable',
+      'Excellent for transforming streams of values',
+    ],
+  }}
+  right={{
+    label: 'AsyncSequence',
+    title: 'Async iteration',
+    variant: 'new',
+    points: [
+      'for try await is built into the language',
+      'Cancellation is structured',
+      'Less operator vocabulary (yet)',
+      'Preferred for new code in iOS 16+',
+    ],
+  }}
+/>
+
+## Strategy
+
+```swift
+protocol ImageCache {
+    func load(_ url: URL) async throws -> UIImage
+}
+struct InMemoryImageCache: ImageCache { /* ... */ }
+struct DiskImageCache: ImageCache { /* ... */ }
+
+final class ImageLoader {
+    let cache: ImageCache
+    init(cache: ImageCache) { self.cache = cache }
+}
+```
+
+Trivial in Swift thanks to protocols. **Use when** behavior varies along an
+axis (cache eviction, payment provider, sort order).
+
+## Adapter
+
+Wrap an Objective-C / C / vendor SDK with a Swift-friendly facade.
+
+```swift
+struct LegacyAdapter {
+    private let legacy: LegacyObjCSDK
+
+    func fetchUser(id: String) async throws -> User {
+        try await withCheckedThrowingContinuation { cont in
+            legacy.fetchUser(id) { result, error in
+                if let error { cont.resume(throwing: error); return }
+                cont.resume(returning: User(legacy: result!))
+            }
+        }
+    }
+}
+```
+
+**Use when** an SDK is callback-based, returns NSDictionary blobs, or doesn't
+follow Swift naming conventions.
+
+## Repository (already covered, listed for completeness)
+
+See [Clean Architecture](/docs/architecture/clean-architecture) — the
+single most useful pattern in modern iOS.
+
+## Builder
+
+```swift
+struct AlertBuilder {
+    private var title = ""
+    private var actions: [Alert.Button] = []
+
+    func title(_ t: String) -> Self { var c = self; c.title = t; return c }
+    func action(_ a: Alert.Button) -> Self { var c = self; c.actions.append(a); return c }
+    func build() -> Alert { Alert(title: Text(title), primaryButton: actions.first ?? .cancel(), secondaryButton: .cancel()) }
+}
+```
+
+In Swift, less common than in Java/Kotlin because of named arguments and
+default values — but useful for SwiftUI view modifiers and complex configuration.
+
+## Patterns to avoid in modern Swift
+
+<Callout kind="warning" title="Pattern smells">
+- **KVO-everywhere.** Replaced by `@Observable` and Combine.
+- **NotificationCenter for app-wide state.** Use `@Observable` services or
+  Combine subjects with explicit ownership.
+- **Massive view controllers.** Symptom of missing view models or use cases.
+- **Inheritance towers.** Swift favors composition with protocols and structs.
+</Callout>
+
+## Continue
+
+- [State patterns](/docs/patterns/state-patterns)
+- [Component patterns](/docs/patterns/component-patterns)

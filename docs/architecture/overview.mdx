@@ -1,0 +1,71 @@
+---
+id: overview
+title: Architecture Guide — Overview
+sidebar_label: Overview
+description: How to think about architecture for production iOS apps — layers, dependency rules, and the Swift Package boundary.
+---
+
+import { Callout, IOSArchDiagram, Diagram, ComparisonCard } from '@site/src/components/Doc';
+
+This guide is the cross-module reference for how this curriculum thinks about
+**iOS app architecture**. Use it whenever you're starting a new feature or
+debating a design decision.
+
+## The five-layer reference architecture
+
+<Diagram
+  title="Layered architecture for a production iOS app"
+  caption="Strict dependency rule: arrows point inward only. Domain has no awareness of SwiftUI, URLSession, or SwiftData."
+>
+  <IOSArchDiagram />
+</Diagram>
+
+Each layer has a single responsibility:
+
+| Layer | Owns | Knows about |
+| --- | --- | --- |
+| **Presentation** | SwiftUI/UIKit views | Layer below (view models) |
+| **View models** | UI state, intent handlers | Use cases |
+| **Domain** | Business rules, entities | Nothing (pure Swift) |
+| **Data** | Repositories | Domain protocols + sources |
+| **Sources** | URLSession, SwiftData, Keychain | OS frameworks |
+
+The **dependency rule** is one-directional. Inner layers (Domain) never import
+or know about outer layers (Presentation, Data). Test the inner layers in
+complete isolation.
+
+## What this buys you
+
+- **Swap implementations freely.** Replace REST with GraphQL, Core Data with SwiftData,
+  REST mocks with snapshot fixtures — your view models don't change.
+- **Test each layer independently.** Domain tests have no SDKs to mock. View-model
+  tests inject fake repositories. UI tests don't care about persistence.
+- **Onboard new engineers fast.** "Find the use case for `checkout`" answers
+  90% of "where does this live?" questions.
+- **Survive feature growth.** Adding analytics, A/B testing, or a Watch app
+  doesn't require restructuring.
+
+## When NOT to use full Clean Architecture
+
+<Callout kind="info" title="It's a spectrum, not a religion">
+A weekend prototype, a single-screen utility, or a marketing app does not need
+a Use Case layer. Start with MVVM + Repository and add a Domain layer once you
+have ≥3 distinct screens or non-trivial business logic.
+</Callout>
+
+## Module-by-module application
+
+| Curriculum module | What it adds to the architecture |
+| --- | --- |
+| 03 SwiftUI | Presentation layer (views, modifiers) |
+| 04 Architecture | View models, use cases, repository protocols |
+| 05 Persistence | Local source impl (SwiftData / Core Data / Keychain) |
+| 06 Networking | Remote source impl (URLSession / Apollo) |
+| 07 Firebase | Auth source + cloud-backed repository impls |
+| 09 Testing | Per-layer test strategy (unit / snapshot / UI) |
+
+## Continue
+
+- [Clean Architecture in detail](/docs/architecture/clean-architecture)
+- [Project structure](/docs/architecture/project-structure)
+- [Design patterns reference](/docs/patterns/design-patterns)

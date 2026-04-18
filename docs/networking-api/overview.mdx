@@ -1,0 +1,168 @@
+---
+id: overview
+title: Module 06 — Networking & API Integration
+sidebar_label: Overview
+description: URLSession, Codable, async/await, Alamofire, image caching, WebSocket, GraphQL, OAuth 2.0, and token refresh.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 06 · 3 weeks · 3 topics</span>
+  <h2>Talk to servers like a pro</h2>
+  <p>
+    Networking is where production apps live or die — slow APIs, flaky networks,
+    expired tokens, and weird JSON. This module covers the full stack:
+    <code>URLSession</code> with <code>async</code>/<code>await</code>, JSON
+    parsing, image pipelines, real-time, and authentication.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · URLSession & Codable', description: 'GET/POST/PUT/DELETE with async/await, custom URLProtocol, ATS, multipart upload, background sessions, and bullet-proof Codable patterns.' },
+    { title: 'Topic 2 · Real-time & advanced transport', description: 'URLSessionWebSocketTask, server-sent events, streaming responses with AsyncSequence, image loading & caching with Kingfisher / SDWebImage, and GraphQL with Apollo.' },
+    { title: 'Topic 3 · Auth & resilience', description: 'OAuth 2.0 Authorization Code + PKCE, refresh-token flows with retry, certificate pinning, request signing, and offline queue patterns.' },
+  ]}
+/>
+
+## URLSession with async/await
+
+```swift
+struct ProductAPI {
+    let base = URL(string: "https://api.example.com")!
+    let session: URLSession = .shared
+    let decoder = JSONDecoder()
+
+    func products() async throws -> [Product] {
+        var req = URLRequest(url: base.appending(path: "products"))
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response)
+        return try decoder.decode([Product].self, from: data)
+    }
+
+    static func assertOK(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
+        else { throw APIError.badStatus }
+    }
+}
+```
+
+## Codable that survives real APIs
+
+```swift
+struct Product: Codable, Identifiable {
+    let id: UUID
+    let name: String
+    let price: Decimal
+    let imageURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, price
+        case imageURL = "image_url"
+    }
+}
+```
+
+Use `JSONDecoder.keyDecodingStrategy = .convertFromSnakeCase` to skip
+manual key mapping; use `dateDecodingStrategy = .iso8601` for sane dates.
+
+## Token refresh that doesn't deadlock
+
+The naïve approach (intercept 401, refresh, retry) breaks when 50 concurrent
+requests all 401 at once and each tries to refresh independently. The pattern
+that works:
+
+```swift
+actor TokenRefresher {
+    private var refreshTask: Task<String, Error>?
+
+    func validToken() async throws -> String {
+        if let token = current, !token.isExpired { return token.value }
+        if let task = refreshTask { return try await task.value }
+        let task = Task { try await self.performRefresh() }
+        refreshTask = task
+        defer { refreshTask = nil }
+        return try await task.value
+    }
+}
+```
+
+`actor` serializes access; the in-flight `refreshTask` deduplicates concurrent
+callers automatically.
+
+## Choose your client
+
+<ComparisonCard
+  left={{
+    label: 'Stdlib',
+    title: 'URLSession + Codable',
+    variant: 'new',
+    points: [
+      'Zero dependencies',
+      'Modern async/await API',
+      'Full control over request lifecycle',
+      'The right default for most apps',
+    ],
+  }}
+  right={{
+    label: 'Third-party',
+    title: 'Alamofire',
+    variant: 'neutral',
+    points: [
+      'Higher-level request DSL',
+      'Built-in retriers, adapters, response serializers',
+      'Network reachability monitoring',
+      'Useful when you need a lot of plumbing fast',
+    ],
+  }}
+/>
+
+## WebSocket and AsyncSequence
+
+```swift
+let task = URLSession.shared.webSocketTask(with: wsURL)
+task.resume()
+
+Task {
+    for try await message in task.messages {
+        switch message {
+        case .string(let s): print("text: \(s)")
+        case .data(let d):   print("data: \(d.count)B")
+        @unknown default:    break
+        }
+    }
+}
+```
+
+`task.messages` is an `AsyncSequence` — `for try await` is the modern API.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Alamofire', tagline: 'HTTP networking', description: 'Mature, declarative HTTP client. Useful when you want auth retriers and request adapters out of the box.', url: 'https://github.com/Alamofire/Alamofire' },
+  { name: 'Kingfisher', tagline: 'Image cache', description: 'Async image loading with memory + disk caching, transformations, and SwiftUI support.', url: 'https://github.com/onevcat/Kingfisher', recommended: true },
+  { name: 'Apollo iOS', tagline: 'GraphQL client', description: 'Codegen + normalized cache + subscriptions. Production-grade GraphQL.', url: 'https://github.com/apollographql/apollo-ios' },
+  { name: 'AppAuth', tagline: 'OAuth 2.0 / OIDC', description: 'Reference implementation of OAuth 2.0 Authorization Code + PKCE for iOS.', url: 'https://github.com/openid/AppAuth-iOS' },
+]} />
+
+## Key takeaways
+
+- **`URLSession` + `async`/`await` + `Codable`** is the modern default — no client library required for most apps.
+- **Centralize HTTP** in a single API service per backend; never call `URLSession` from a view model.
+- **Refresh-token flows must be serialized** — use an `actor` or the equivalent.
+- **Cache aggressively** — image cache for assets, `URLCache` for HTTP, your own cache for parsed objects.
+
+## Practice exercises
+
+1. Build a paginated product list backed by `URLSession` with retry on 5xx.
+2. Implement a token refresher actor that survives 100 concurrent 401s without thundering herd.
+3. Stream a large JSON response with `URLSession.bytes(for:)` and `AsyncSequence`.
+4. Set up Apollo for a public GraphQL API (e.g. SpaceX) with subscriptions.
+
+## Next module
+
+Continue to **[Module 07 · Firebase & Backend Services](/docs/firebase-cloud/overview)** — bring real-time, auth, push, and analytics to your app.

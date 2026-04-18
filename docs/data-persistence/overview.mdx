@@ -1,0 +1,175 @@
+---
+id: overview
+title: Module 05 — Data Persistence & Storage
+sidebar_label: Overview
+description: UserDefaults, @AppStorage, Core Data, SwiftData (@Model / @Query), Keychain Services, and CloudKit.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 05 · 2 weeks · 2 topics</span>
+  <h2>Give your app a memory</h2>
+  <p>
+    Apple ships at least four official storage technologies, each with a
+    distinct sweet spot. Pick the wrong one and you'll fight the framework
+    forever. This module gives you the decision tree.
+  </p>
+</div>
+
+## The four-layer storage picture
+
+<ComparisonCard
+  left={{
+    label: 'Settings & flags',
+    title: 'UserDefaults / @AppStorage',
+    variant: 'neutral',
+    points: [
+      'Plist-backed key-value store',
+      'Tiny payloads only (booleans, strings, small dicts)',
+      '@AppStorage("isOnboarded") for SwiftUI bindings',
+      'Synced across app group containers',
+    ],
+  }}
+  right={{
+    label: 'Sensitive secrets',
+    title: 'Keychain Services',
+    variant: 'neutral',
+    points: [
+      'Encrypted, device-bound by default',
+      'Survives app deletion (configurable)',
+      'iCloud Keychain sync available',
+      'Use for tokens, passwords, biometric-protected data',
+    ],
+  }}
+/>
+
+<ComparisonCard
+  left={{
+    label: 'Modern object graph',
+    title: 'SwiftData',
+    variant: 'new',
+    points: [
+      '@Model macro generates persistence',
+      '@Query property wrapper drives SwiftUI lists',
+      'Built on Core Data — interop available',
+      'iOS 17+ only; CloudKit sync built-in',
+    ],
+  }}
+  right={{
+    label: 'Mature object graph',
+    title: 'Core Data',
+    variant: 'old',
+    points: [
+      'NSManagedObject / NSFetchRequest',
+      'Battle-tested since iOS 3',
+      'Granular control: migrations, faulting, undo',
+      'Choose for iOS 16- support or complex graphs',
+    ],
+  }}
+/>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · UserDefaults & Keychain', description: 'When small KV storage is appropriate, the @AppStorage / @SceneStorage SwiftUI wrappers, and a Keychain service abstraction with the kSecClass APIs.' },
+    { title: 'Topic 2 · Core Data, SwiftData & CloudKit', description: '@Model, @Query, ModelContainer, lightweight migrations, NSPersistentCloudKitContainer for iCloud sync, and conflict resolution.' },
+  ]}
+/>
+
+## SwiftData in 30 lines
+
+```swift
+@Model
+final class Expense {
+    var amount: Decimal
+    var category: String
+    var date: Date
+    init(amount: Decimal, category: String, date: Date = .now) {
+        self.amount = amount
+        self.category = category
+        self.date = date
+    }
+}
+
+@main
+struct WalletApp: App {
+    var body: some Scene {
+        WindowGroup { ExpenseList() }
+            .modelContainer(for: Expense.self)
+    }
+}
+
+struct ExpenseList: View {
+    @Query(sort: \.date, order: .reverse) private var expenses: [Expense]
+    @Environment(\.modelContext) private var context
+
+    var body: some View {
+        List(expenses) { Text("\($0.category): \($0.amount)") }
+        Button("Add") {
+            context.insert(Expense(amount: 12.5, category: "Coffee"))
+        }
+    }
+}
+```
+
+`@Query` re-runs and updates the view automatically when the model context changes.
+
+## Keychain — the right way
+
+```swift
+enum KeychainStore {
+    static func save(_ token: String, account: String) throws {
+        let data = Data(token.utf8)
+        let q: [String: Any] = [
+            kSecClass as String       : kSecClassGenericPassword,
+            kSecAttrAccount as String : account,
+            kSecValueData as String   : data,
+        ]
+        SecItemDelete(q as CFDictionary)
+        let status = SecItemAdd(q as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.save(status) }
+    }
+}
+```
+
+<Callout kind="warning" title="Never store secrets in UserDefaults">
+UserDefaults files are plaintext plists inside the sandbox. Anyone with a backup
+or a jailbroken device can read them. Tokens, passwords, biometric data, and
+anything compliance-relevant goes in Keychain.
+</Callout>
+
+## CloudKit sync (free tier!)
+
+`NSPersistentCloudKitContainer` (Core Data) and SwiftData with
+`ModelConfiguration(cloudKitDatabase: .private(...))` add iCloud sync with
+conflict resolution out of the box. Limits: ~10GB private, 100MB asset size,
+and your users need iCloud signed in.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'GRDB.swift', tagline: 'SQLite toolkit', description: 'When you want SQL directly — fast, expressive, and battle-tested.', url: 'https://github.com/groue/GRDB.swift', recommended: true },
+  { name: 'Realm Swift', tagline: 'Object database', description: 'Cross-platform alternative to Core Data. Now MongoDB-owned, sync available.', url: 'https://github.com/realm/realm-swift' },
+  { name: 'KeychainAccess', tagline: 'Keychain wrapper', description: 'Idiomatic Swift API around Security.framework — saves a lot of CFDictionary boilerplate.', url: 'https://github.com/kishikawakatsumi/KeychainAccess' },
+  { name: 'Defaults', tagline: 'Type-safe UserDefaults', description: 'Strongly-typed wrapper around UserDefaults with Combine integration.', url: 'https://github.com/sindresorhus/Defaults' },
+]} />
+
+## Key takeaways
+
+- **Pick storage by data shape**: KV → UserDefaults · Secrets → Keychain · Object graph → SwiftData/Core Data · Sync → CloudKit.
+- **SwiftData is the new default** for iOS 17+. Core Data remains relevant for back-deployment and advanced features.
+- **`@Query` is reactive** — pair it with `@Observable` view models for clean data flow.
+- **Migrations are not optional** — design schema versions from day one.
+
+## Practice exercises
+
+1. Implement a Keychain-backed `TokenStore` with read/write/delete and biometric unlock.
+2. Build an offline-first list backed by SwiftData with `@Query` filtering on a search string.
+3. Add CloudKit sync to a SwiftData app and resolve a merge conflict.
+4. Migrate a Core Data model with a lightweight migration mapping a renamed attribute.
+
+## Next module
+
+Continue to **[Module 06 · Networking & API Integration](/docs/networking-api/overview)** — connect your app to the rest of the world.

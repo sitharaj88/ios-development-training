@@ -1,0 +1,115 @@
+---
+id: overview
+title: Module 08 — Advanced iOS Components
+sidebar_label: Overview
+description: App extensions, BGTaskScheduler, Core Location + MapKit, AVFoundation, Core Bluetooth, WidgetKit, and App Clips.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 08 · 3 weeks · 3 topics</span>
+  <h2>Beyond the main app target</h2>
+  <p>
+    The most loved iOS apps don't live only in their main window — they show
+    Lock Screen widgets, share extensions, run background fetches, capture
+    audio, and pin themselves to Maps. This module unlocks every surface.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Extensions & background tasks', description: 'Share / Action / Notification Service extensions, App Groups for shared storage, BGTaskScheduler (refresh + processing tasks), and Background URLSession.' },
+    { title: 'Topic 2 · Location, Maps, Camera, Audio', description: 'Core Location authorization flows, MKMapView + MKAnnotation, AVCaptureSession for camera, AVAudioEngine for recording, PhotosPicker.' },
+    { title: 'Topic 3 · Widgets, App Clips, Bluetooth', description: 'WidgetKit (Home/Lock Screen/StandBy), TimelineProvider, App Clip launch experiences, Core Bluetooth central + peripheral.' },
+  ]}
+/>
+
+## App Extensions are separate processes
+
+This is the biggest mental shift. Your share extension is *not* your app —
+it's a sibling target with its own bundle, sandbox, and binary, sharing data
+through an App Group container.
+
+```swift
+let groupID = "group.com.example.shop"
+let url = FileManager.default
+    .containerURL(forSecurityApplicationGroupIdentifier: groupID)?
+    .appendingPathComponent("draft.json")
+```
+
+Use `App Groups` to share files, `UserDefaults(suiteName:)` for KV,
+and the Keychain access group for secrets.
+
+## WidgetKit timelines
+
+```swift
+struct ExpenseWidgetProvider: TimelineProvider {
+    func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> Void) {
+        let entries = (0..<6).map { offset in
+            Entry(date: .now.addingTimeInterval(TimeInterval(offset * 3600)),
+                  total: ExpenseStore.shared.todayTotal())
+        }
+        completion(Timeline(entries: entries, policy: .atEnd))
+    }
+}
+```
+
+Widgets are *not* live — you precompute future snapshots. iOS picks the right
+entry to render at any given time.
+
+## Background tasks done correctly
+
+<ComparisonCard
+  left={{
+    label: 'BGAppRefreshTask',
+    title: 'Short fetches',
+    variant: 'neutral',
+    points: [
+      'Up to ~30 seconds',
+      'Runs when iOS predicts user will open app',
+      'Use for refreshing feeds, badges',
+      'No guarantee of frequency',
+    ],
+  }}
+  right={{
+    label: 'BGProcessingTask',
+    title: 'Long-running work',
+    variant: 'neutral',
+    points: [
+      'Minutes; runs when device idle + charging',
+      'Database compaction, ML training, large uploads',
+      'Requires "Permitted background task scheduler identifiers"',
+      'Test with lldb e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"..."]',
+    ],
+  }}
+/>
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'WidgetKit', tagline: 'Home/Lock/StandBy widgets', description: 'Apple\'s widget framework. Free, built-in.', url: 'https://developer.apple.com/documentation/widgetkit', recommended: true },
+  { name: 'Mapbox iOS', tagline: 'Mapping alternative', description: 'When MKMapView isn\'t enough — vector tiles, custom styles, offline maps.', url: 'https://github.com/mapbox/mapbox-maps-ios' },
+  { name: 'AVKit', tagline: 'Player UI', description: 'AVPlayerViewController + Picture-in-Picture out of the box.', url: 'https://developer.apple.com/documentation/avkit' },
+  { name: 'CoreBluetooth', tagline: 'BLE central/peripheral', description: 'Apple\'s Bluetooth Low Energy framework — for IoT, fitness, medical.', url: 'https://developer.apple.com/documentation/corebluetooth' },
+]} />
+
+## Key takeaways
+
+- **Extensions are separate processes** — design data sharing via App Groups from day one.
+- **Background tasks are unpredictable** — design idempotent work and don't promise schedules to users.
+- **Widgets are timeline-driven**, not push-driven — recompute and refresh policies matter.
+- **Permission strings live in Info.plist** — every microphone, camera, location, contacts use requires an `NS*UsageDescription`.
+
+## Practice exercises
+
+1. Add a Share Extension that imports a URL into your app via App Groups.
+2. Build a Lock Screen widget that shows today's step count.
+3. Implement BGAppRefreshTask to refresh a feed and update the badge.
+4. Capture a 10-second audio recording with AVAudioEngine and save to Documents/.
+
+## Next module
+
+Continue to **[Module 09 · Testing & Quality Assurance](/docs/testing-quality/overview)** — confidence at every layer.

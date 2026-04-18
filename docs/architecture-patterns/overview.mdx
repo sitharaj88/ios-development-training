@@ -1,0 +1,185 @@
+---
+id: overview
+title: Module 04 — Architecture & Design Patterns
+sidebar_label: Overview
+description: MVVM with SwiftUI, Clean Architecture, Repository, Coordinator, dependency injection, an intro to TCA, and modular Swift Packages.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, IOSArchDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 04 · 3 weeks · 3 topics</span>
+  <h2>Make iOS apps that survive a year of feature work</h2>
+  <p>
+    Architecture is what stops your app collapsing under its own weight at 50k
+    lines. This module gives you a layered, testable structure used by Apple
+    itself in sample code and by every serious iOS shop.
+  </p>
+</div>
+
+## What this module gives you
+
+- A **default architecture** to reach for on day one of any new iOS project.
+- **Vocabulary** — Repository, Use Case, Coordinator, DI container — that the
+  rest of your team and the wider community already use.
+- **Decision rules** for when MVVM is enough, when to introduce a Coordinator,
+  and when to consider TCA.
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · MVVM with SwiftUI', description: 'View ↔ ViewModel split, @Observable view models, intent functions, async actions, and testing view models in isolation.' },
+    { title: 'Topic 2 · Clean Architecture', description: 'Presentation / Domain / Data layers, Use Cases, Repository protocols, dependency rule, and how to slice features into Swift Packages.' },
+    { title: 'Topic 3 · DI & Coordinators', description: 'Property injection, init injection, the Composition Root, lightweight DI containers, and the Coordinator pattern for navigation.' },
+  ]}
+/>
+
+## The reference architecture
+
+<Diagram
+  title="Layered architecture for a production iOS app"
+  caption="Strict dependency rule: arrows point inward only. Domain has no awareness of SwiftUI, URLSession, or SwiftData."
+>
+  <IOSArchDiagram />
+</Diagram>
+
+## MVVM with @Observable
+
+```swift
+@Observable
+final class ProductListViewModel {
+    enum State { case idle, loading, loaded([Product]), failed(String) }
+    private(set) var state: State = .idle
+
+    private let useCase: FetchProductsUseCase
+
+    init(useCase: FetchProductsUseCase) {
+        self.useCase = useCase
+    }
+
+    @MainActor
+    func load() async {
+        state = .loading
+        do { state = .loaded(try await useCase.execute()) }
+        catch { state = .failed(error.localizedDescription) }
+    }
+}
+
+struct ProductListView: View {
+    @State private var vm: ProductListViewModel
+    var body: some View {
+        Group {
+            switch vm.state {
+            case .idle, .loading: ProgressView()
+            case .loaded(let products): List(products) { ProductRow($0) }
+            case .failed(let msg): ErrorView(message: msg) { Task { await vm.load() } }
+            }
+        }
+        .task { await vm.load() }
+    }
+}
+```
+
+Notice the view model has *no SwiftUI imports*. It's a plain Swift class
+that's trivially testable.
+
+## Repository protocols isolate the source
+
+```swift
+// Domain — pure Swift, no framework dependencies
+protocol ProductRepository {
+    func fetchAll() async throws -> [Product]
+}
+
+struct FetchProductsUseCase {
+    let repo: ProductRepository
+    func execute() async throws -> [Product] { try await repo.fetchAll() }
+}
+
+// Data — knows about URLSession, SwiftData, Firebase
+final class ProductRepositoryImpl: ProductRepository {
+    let api: ProductAPI
+    let cache: ProductCache
+    func fetchAll() async throws -> [Product] {
+        if let cached = try? cache.load(), !cached.isEmpty { return cached }
+        let fresh = try await api.products()
+        try cache.save(fresh)
+        return fresh
+    }
+}
+```
+
+The view model only knows the `ProductRepository` protocol — swap implementations
+freely (test fakes, mock servers, offline mode).
+
+## Coordinator pattern (when navigation grows)
+
+<ComparisonCard
+  left={{
+    label: 'NavigationStack only',
+    title: 'View-driven routing',
+    variant: 'neutral',
+    points: [
+      'Path lives in the root view\'s @State',
+      'Simple flows, single feature',
+      'Great default for SwiftUI apps under 30 screens',
+      'Deep links resolved in the root view',
+    ],
+  }}
+  right={{
+    label: 'Coordinator',
+    title: 'Centralized routing object',
+    variant: 'neutral',
+    points: [
+      '@Observable Coordinator owns the path',
+      'Reusable across modules / Swift Packages',
+      'Easy deep-link & analytics interception',
+      'Necessary when navigation rules cross features',
+    ],
+  }}
+/>
+
+```swift
+@Observable
+final class AppCoordinator {
+    var path = NavigationPath()
+    func openProduct(_ product: Product) { path.append(product) }
+    func openCart() { path.append(CartRoute()) }
+}
+```
+
+## When to consider TCA
+
+[The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture)
+shines when your app is heavily state-driven (financial dashboards, IDE-like
+tools, multi-step flows). It enforces unidirectional data flow,
+exhaustive test coverage, and great time-travel debugging — at the cost of
+boilerplate. Reach for it when MVVM stops scaling, not before.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Swinject', tagline: 'DI container', description: 'Mature dependency injection container if you outgrow init injection.', url: 'https://github.com/Swinject/Swinject' },
+  { name: 'Factory', tagline: 'Modern Swift DI', description: 'Lightweight, compile-time-friendly DI built around Swift property wrappers.', url: 'https://github.com/hmlongco/Factory', recommended: true },
+  { name: 'TCA', tagline: 'The Composable Architecture', description: 'Opinionated unidirectional architecture by Point-Free.', url: 'https://github.com/pointfreeco/swift-composable-architecture' },
+  { name: 'Tuist', tagline: 'Modular Xcode projects', description: 'Generate Xcode projects from a Swift DSL — keeps modular monorepos sane.', url: 'https://tuist.io' },
+]} />
+
+## Key takeaways
+
+- **Default to MVVM** with `@Observable` and `async`/`await`. It covers 80% of apps.
+- **Keep Domain pure** — no SwiftUI, no URLSession, no SwiftData. Pure Swift only.
+- **Repository protocols** are the seam where production code meets test fakes.
+- **Coordinators** are not always necessary; reach for them when navigation rules cross features.
+
+## Practice exercises
+
+1. Refactor a 200-line view into a view + view model + use case + repository.
+2. Write a unit test that injects a fake repository and asserts state transitions.
+3. Extract the data layer into its own Swift Package.
+4. Introduce a Coordinator and migrate path management out of the root view.
+
+## Next module
+
+Continue to **[Module 05 · Data Persistence & Storage](/docs/data-persistence/overview)** — give your app a memory.

@@ -1,0 +1,167 @@
+---
+id: overview
+title: Module 13 — Package Management & Collaboration
+sidebar_label: Overview
+description: Swift Package Manager, CocoaPods, Git workflows, Xcode Cloud, and Fastlane automation.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 13 · 1 week · 1 topic</span>
+  <h2>Ship code as a team</h2>
+  <p>
+    Solo development is rare in production. This module covers the packaging,
+    branching, and CI workflows that make teams productive on the same iOS
+    codebase.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · SPM, Git, CI/CD', description: 'Swift Package Manager (Package.swift, products, targets, binary frameworks), CocoaPods (when still required), Git branching (trunk-based vs GitFlow), conventional commits, PR review etiquette, Xcode Cloud workflows, and Fastlane lanes.' },
+  ]}
+/>
+
+## SPM is the default
+
+```swift
+// swift-tools-version:5.10
+import PackageDescription
+
+let package = Package(
+    name: "FeatureCart",
+    platforms: [.iOS(.v16)],
+    products: [.library(name: "FeatureCart", targets: ["FeatureCart"])],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-collections", from: "1.0.0"),
+    ],
+    targets: [
+        .target(name: "FeatureCart", dependencies: [.product(name: "Collections", package: "swift-collections")]),
+        .testTarget(name: "FeatureCartTests", dependencies: ["FeatureCart"]),
+    ]
+)
+```
+
+For modular monoliths, split each feature into its own SPM target. Build times
+go down, test isolation goes up, and the dependency arrows become explicit.
+
+## SPM vs CocoaPods today
+
+<ComparisonCard
+  left={{
+    label: 'CocoaPods',
+    title: 'The classic',
+    variant: 'old',
+    points: [
+      'Mature, every iOS dev knows it',
+      'Modifies your Xcode project on install',
+      'Required for some legacy SDKs',
+      'Maintenance mode — Apple is the recommended path now',
+    ],
+  }}
+  right={{
+    label: 'Swift Package Manager',
+    title: 'The default',
+    variant: 'new',
+    points: [
+      'Built into Xcode, no extra tools',
+      'Doesn\'t mutate your .xcodeproj',
+      'First-class binary frameworks (XCFrameworks)',
+      'Use unless an SDK is SPM-incompatible',
+    ],
+  }}
+/>
+
+## Git workflow that scales
+
+```
+main           ─── (always deployable)
+  └─ feature/  ─── short-lived branches, squash-merged via PR
+  └─ release/  ─── only for app version cuts
+  └─ hotfix/   ─── urgent fixes, cherry-picked back to main
+```
+
+Pair with **Conventional Commits** (`feat:`, `fix:`, `chore:`) so changelogs
+generate themselves and CI can decide version bumps.
+
+<Callout kind="tip" title="Trunk-based for product teams, GitFlow for SDK teams">
+Trunk-based development with feature flags is faster for product apps. GitFlow
+makes more sense when you ship versioned libraries with multiple supported
+release lines.
+</Callout>
+
+## CI: Xcode Cloud vs GitHub Actions
+
+```yaml
+# .github/workflows/ios.yml
+name: iOS
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: xcodebuild -scheme MyApp -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15'
+              test | xcpretty
+```
+
+Xcode Cloud requires a paid developer account but ties beautifully into App
+Store Connect (TestFlight uploads happen automatically). GitHub Actions is
+cheaper and more flexible for non-Apple workflows.
+
+## Fastlane lanes
+
+```ruby
+# Fastfile
+default_platform :ios
+
+lane :beta do
+  match(type: "appstore")
+  build_app(scheme: "MyApp")
+  upload_to_testflight(skip_waiting_for_build_processing: true)
+end
+
+lane :release do
+  match(type: "appstore")
+  build_app(scheme: "MyApp")
+  upload_to_app_store(submit_for_review: true, automatic_release: true)
+end
+```
+
+Two commands (`fastlane beta`, `fastlane release`) replace dozens of clicks.
+
+## Recommended tools
+
+<LibraryGrid libraries={[
+  { name: 'Swift Package Manager', tagline: 'Apple\'s package manager', description: 'Built into Swift and Xcode. Use it first.', url: 'https://www.swift.org/package-manager/', recommended: true },
+  { name: 'Fastlane', tagline: 'Release automation', description: 'match, gym, deliver, pilot — the de-facto iOS automation toolkit.', url: 'https://fastlane.tools', recommended: true },
+  { name: 'Tuist', tagline: 'Modular Xcode projects', description: 'Generate Xcode projects from a Swift DSL — keeps modular monorepos sane.', url: 'https://tuist.io' },
+  { name: 'Periphery', tagline: 'Dead-code detection', description: 'Scans your Swift codebase for unused declarations.', url: 'https://github.com/peripheryapp/periphery' },
+]} />
+
+## Key takeaways
+
+- **SPM is the default**. Reach for CocoaPods only when an SDK forces you.
+- **Modularize features into Swift Packages** — build times and test isolation both improve.
+- **Conventional Commits + squash merges** keep history clean and changelogs automatic.
+- **Automate releases with Fastlane or Xcode Cloud** — two-command shipping is the bar.
+
+## Practice exercises
+
+1. Extract one feature from a sample app into its own Swift Package.
+2. Set up `match` for code-signing across two devices.
+3. Write a Fastlane lane that builds, tests, screenshots, and uploads to TestFlight.
+4. Add a GitHub Actions workflow that runs SwiftLint + tests on every PR.
+
+## Where to go next
+
+You've finished the curriculum 🎉.
+
+- Build the **5 capstone projects** end-to-end and put them on GitHub.
+- Read the [Architecture Guide](/docs/architecture/overview) for the layered reference architecture.
+- Review the [Design Patterns](/docs/patterns/design-patterns) reference whenever you encounter a new modeling problem.
+- Open-source a Swift Package and see what feedback you get.
+- Apply for iOS Developer roles — you have everything you need.

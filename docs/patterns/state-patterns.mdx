@@ -1,0 +1,175 @@
+---
+id: state-patterns
+title: State Patterns in SwiftUI
+sidebar_label: State Patterns
+description: How to model UI state in SwiftUI — @State, @Binding, @Observable, Environment, and the unidirectional data flow style.
+---
+
+import { Callout, ComparisonCard, StepList, SwiftUIStateDiagram, Diagram } from '@site/src/components/Doc';
+
+Most SwiftUI bugs trace back to *where state lives*. This document codifies the
+patterns that make state predictable.
+
+## The dependency graph (mental model)
+
+<Diagram
+  title="The SwiftUI render loop"
+  caption="Mutating tracked state invalidates only the views that read it. The framework computes a new view tree, diffs it, and renders deltas."
+>
+  <SwiftUIStateDiagram />
+</Diagram>
+
+The implication: **read what you need, where you need it**. Avoid passing
+parent-owned state into a child if the child can read it from `@Environment`.
+
+## State ownership rules
+
+<StepList
+  steps={[
+    { title: 'Rule 1 — One source of truth', description: 'Each piece of state is owned by exactly one view or model. Other views read or bind, never duplicate.' },
+    { title: 'Rule 2 — Lift only as far as needed', description: 'If two siblings need to share a value, lift it to their common parent. Don\'t lift further.' },
+    { title: 'Rule 3 — @State for view-local; @Observable for shared', description: 'Toggles, selections, text-field text → @State. Cart, session, theme → @Observable model in Environment.' },
+    { title: 'Rule 4 — Derive, don\'t cache', description: 'Computed properties on @Observable models recompute cheaply. Don\'t store derived values that can drift from their source.' },
+  ]}
+/>
+
+## @State vs @Binding vs @Observable
+
+<ComparisonCard
+  left={{
+    label: 'Local & private',
+    title: '@State',
+    variant: 'neutral',
+    points: [
+      'Owned by one view',
+      'Persists across body recomputes',
+      'Use for UI-only flags (showSheet, selectedTab)',
+      'Reset when view identity changes',
+    ],
+  }}
+  right={{
+    label: 'Shared via parent',
+    title: '@Binding',
+    variant: 'neutral',
+    points: [
+      'Read/write reference to parent\'s @State',
+      'Propagated as $value',
+      'No ownership; never use as source of truth',
+      'Perfect for reusable input components',
+    ],
+  }}
+/>
+
+```swift
+struct ParentView: View {
+    @State private var query = ""
+    var body: some View {
+        VStack {
+            SearchBar(text: $query)         // child gets a Binding
+            ResultsList(query: query)       // child gets a value
+        }
+    }
+}
+```
+
+## @Observable replaces ObservableObject
+
+```swift
+@Observable
+final class Session {
+    var user: User?
+    var isLoggedIn: Bool { user != nil }
+    func signIn(_ u: User) { user = u }
+}
+
+@main struct ShopApp: App {
+    @State private var session = Session()
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(session)        // inject into the env
+        }
+    }
+}
+
+struct ProfileView: View {
+    @Environment(Session.self) private var session
+    var body: some View {
+        Text(session.user?.name ?? "Guest")
+    }
+}
+```
+
+The macro generates change tracking automatically. SwiftUI re-renders only
+the views that read the property that changed — not every view that holds a
+reference to `Session`.
+
+## Unidirectional data flow
+
+When a screen has many actions and complex state machines, model state as a
+finite enum and intents as a separate type. This is the TCA mindset; you don't
+need TCA itself to apply it.
+
+```swift
+@Observable
+final class CheckoutViewModel {
+    enum State {
+        case form(CheckoutForm)
+        case processing
+        case success(Order)
+        case failed(String)
+    }
+    enum Intent {
+        case fieldChanged(WritableKeyPath<CheckoutForm, String>, String)
+        case submit
+        case dismissError
+    }
+
+    private(set) var state: State = .form(.empty)
+
+    @MainActor
+    func send(_ intent: Intent) async {
+        switch (state, intent) {
+        case (.form(var f), .fieldChanged(let kp, let v)):
+            f[keyPath: kp] = v
+            state = .form(f)
+        case (.form(let f), .submit):
+            state = .processing
+            do { state = .success(try await submit(f)) }
+            catch { state = .failed(error.localizedDescription) }
+        case (.failed, .dismissError):
+            state = .form(.empty)
+        default: break
+        }
+    }
+}
+```
+
+The view becomes a pure projection of `state` and a producer of `Intent`s.
+Test by sending intents and asserting the resulting state.
+
+## Environment for cross-cutting concerns
+
+`@Environment` is dependency injection for SwiftUI. Use it for:
+
+- **Theme / design system** (colors, typography)
+- **Locale, color scheme, layout direction** (built-in)
+- **Services** that many views need (analytics, feature flags)
+- **Navigation routers / coordinators**
+
+```swift
+@Environment(\.analytics) private var analytics
+```
+
+with a custom `EnvironmentKey` provided once at the app root.
+
+<Callout kind="warning" title="Don't put view models in @Environment">
+View models are per-screen state. Putting them in the environment causes
+mysterious sharing across navigation pushes. Use `@State`/`@Bindable` per
+screen and inject *services* (not view models) via the environment.
+</Callout>
+
+## Continue
+
+- [Design patterns](/docs/patterns/design-patterns)
+- [Component patterns](/docs/patterns/component-patterns)

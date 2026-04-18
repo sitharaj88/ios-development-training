@@ -1,0 +1,133 @@
+---
+id: overview
+title: Module 11 — App Store Connect & Publishing
+sidebar_label: Overview
+description: Certificates, provisioning, code signing, TestFlight, App Store listing, In-App Purchases, StoreKit 2, ad monetization, and ASO.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 11 · 2 weeks · 2 topics</span>
+  <h2>From archive to App Store</h2>
+  <p>
+    Shipping is a skill. This module covers everything between
+    <em>"Build Succeeded"</em> and <em>"Now available on the App Store"</em> —
+    code signing, TestFlight, the App Store Connect dashboard, In-App Purchases
+    with StoreKit 2, and App Store Optimization.
+  </p>
+</div>
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: 'Topic 1 · Signing, archives, TestFlight', description: 'Apple Developer Program, certificates (Development / Distribution), App IDs, provisioning profiles, capabilities, archive → distribute, TestFlight internal/external groups.' },
+    { title: 'Topic 2 · App Store, IAPs, monetization', description: 'App Store Connect listing, screenshots & video, App Privacy report, In-App Purchases with StoreKit 2 (consumable / non-consumable / subscriptions), receipt validation, AdMob, App Tracking Transparency, ASO.' },
+  ]}
+/>
+
+## Code signing — the mental model
+
+<ComparisonCard
+  left={{
+    label: 'Development',
+    title: 'Run on real devices',
+    variant: 'neutral',
+    points: [
+      'Development certificate (.cer in Keychain)',
+      'Development provisioning profile',
+      'Lists allowed device UDIDs',
+      'Auto-managed by Xcode for solo developers',
+    ],
+  }}
+  right={{
+    label: 'Distribution',
+    title: 'TestFlight & App Store',
+    variant: 'neutral',
+    points: [
+      'Distribution certificate',
+      'App Store / Ad-Hoc / Enterprise profiles',
+      'No device list (App Store) or fixed list (Ad-Hoc)',
+      'Use match (Fastlane) for team certificate sync',
+    ],
+  }}
+/>
+
+<Callout kind="tip" title="Use Fastlane match in any team setting">
+Sharing certificates via "export from Keychain" is a recipe for tears. `match`
+stores them encrypted in a private Git repo and auto-installs on every dev
+machine and CI runner.
+</Callout>
+
+## TestFlight in five steps
+
+1. **Increment build number**, archive (Product → Archive).
+2. **Distribute** → App Store Connect → upload.
+3. App Store Connect processes the build (~10 min) and runs export compliance.
+4. Add internal testers (no Apple review) or external (one-time review per major version).
+5. Testers install via TestFlight app and feedback comes back through the same app.
+
+## StoreKit 2 — IAPs that are pleasant
+
+```swift
+import StoreKit
+
+let products = try await Product.products(for: ["pro_monthly", "pro_yearly"])
+
+// Purchase
+let result = try await products.first!.purchase()
+switch result {
+case .success(let verification):
+    let transaction = try checkVerified(verification)
+    await unlockPro(for: transaction)
+    await transaction.finish()
+case .userCancelled, .pending: break
+@unknown default: break
+}
+
+// Listen for transaction updates anywhere in your app
+Task.detached {
+    for await update in Transaction.updates {
+        // re-deliver content if needed
+    }
+}
+```
+
+The old StoreKit 1 receipt validation gymnastics are gone. Use server-side
+verification with `Transaction.jsonRepresentation` and the App Store Server API
+for revenue-critical paths.
+
+## App Privacy is now part of submission
+
+App Store Connect requires you to declare what data you collect, how it's used,
+and which third-party SDKs collect data. Inaccurate disclosures = rejection
+(or worse, removal). Audit your SDKs annually.
+
+## Recommended tools
+
+<LibraryGrid libraries={[
+  { name: 'Fastlane', tagline: 'Release automation', description: 'match, gym, deliver, pilot — automate every step from signing to TestFlight to App Store.', url: 'https://fastlane.tools', recommended: true },
+  { name: 'StoreKit 2', tagline: 'Modern IAP API', description: 'Built-in. iOS 15+. Async/await, automatic transaction validation.', url: 'https://developer.apple.com/storekit/', recommended: true },
+  { name: 'RevenueCat', tagline: 'Subscription infra', description: 'Cross-platform subscription server, entitlements, A/B testing of paywalls.', url: 'https://www.revenuecat.com' },
+  { name: 'AppFollow', tagline: 'ASO analytics', description: 'Keyword tracking, review monitoring, competitor intelligence.', url: 'https://appfollow.io' },
+]} />
+
+## Key takeaways
+
+- **Code signing is process, not magic** — once you understand certs / profiles / capabilities, problems become diagnosable.
+- **Use Fastlane match** in any team setting.
+- **StoreKit 2 + server-side validation** is the modern IAP stack.
+- **App Privacy disclosures are part of the binary** — keep them accurate.
+- **Screenshots and the first 25 chars of your subtitle drive conversions** — invest there.
+
+## Practice exercises
+
+1. Set up Fastlane match for a sample app and run a TestFlight upload from CI.
+2. Implement a StoreKit 2 subscription with restore + family sharing.
+3. Audit a third-party SDK for App Privacy disclosure accuracy.
+4. Write three App Store screenshot variants and A/B test via product page optimization.
+
+## Next module
+
+Continue to **[Module 12 · Advanced & Trending Topics](/docs/advanced-trending/overview)** — Swift Concurrency depth, Core ML, ARKit, watchOS, visionOS.

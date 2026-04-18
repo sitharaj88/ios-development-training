@@ -39,7 +39,7 @@ export default function LibraryGrid({ libraries, columns = 2 }: LibraryGridProps
             </div>
           </div>
           <div className={styles.tagline}>{lib.tagline}</div>
-          {lib.description && <p className={styles.description}>{lib.description}</p>}
+          {lib.description && <div className={styles.description}>{lib.description}</div>}
           {lib.tags && lib.tags.length > 0 && (
             <div className={styles.tags}>
               {lib.tags.map((tag, j) => (

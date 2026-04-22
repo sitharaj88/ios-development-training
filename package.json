@@ -2,6 +2,14 @@
   "name": "ios-development-training",
   "version": "0.0.0",
   "private": true,
+  "homepage": "https://sitharaj88.github.io/ios-development-training/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sitharaj88/ios-development-training.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sitharaj88/ios-development-training/issues"
+  },
   "scripts": {
     "docusaurus": "docusaurus",
     "start": "docusaurus start",

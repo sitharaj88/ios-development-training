@@ -5,6 +5,10 @@ by Sitharaj Seenivasan.
 
 13 modules · 72+ topics · 32 weeks · 115h · 5 portfolio projects.
 
+Repository: https://github.com/sitharaj88/ios-development-training
+
+Live site: https://sitharaj88.github.io/ios-development-training/
+
 ## Run
 
 ```bash

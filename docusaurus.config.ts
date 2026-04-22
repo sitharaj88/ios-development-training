@@ -4,6 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const BROCHURE_URL =
   'https://pub-4bd5087c503a41ccafd70ad5588f3220.r2.dev/brochures/iOS_Development_Training_Sitharaj.pdf';
+const REPO_URL = 'https://github.com/sitharaj88/ios-development-training';
 
 const config: Config = {
   title: 'iOS Development Training',
@@ -41,8 +42,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl:
-            'https://github.com/sitharaj88/ios-development-training/edit/main/',
+          editUrl: `${REPO_URL}/edit/main/`,
         },
         blog: false,
         theme: {
@@ -112,8 +112,8 @@ const config: Config = {
           position: 'right',
         },
         {
-          href: 'https://github.com/sitharaj88',
-          label: 'GitHub',
+          href: REPO_URL,
+          label: 'Repository',
           position: 'right',
         },
       ],
@@ -152,7 +152,8 @@ const config: Config = {
           title: 'Connect',
           items: [
             {label: 'Sitharaj.in', href: 'https://www.sitharaj.in'},
-            {label: 'GitHub', href: 'https://github.com/sitharaj88'},
+            {label: 'Repository', href: REPO_URL},
+            {label: 'GitHub Profile', href: 'https://github.com/sitharaj88'},
             {label: 'LinkedIn', href: 'https://linkedin.com/in/sitharaj08'},
             {label: 'Email', href: 'mailto:sitharaj.info@gmail.com'},
           ],

@@ -1,0 +1,280 @@
+---
+id: topic-1-unit-testing
+title: Topic 1 · Unit Testing & TDD
+sidebar_label: 1 · Unit Testing
+description: Swift Testing and XCTest side-by-side, async tests, @Observable view models on @MainActor, protocol mocking, TDD rhythm, and meaningful coverage.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 09 · Topic 1 · ~2 hours</span>
+  <h2>Tests are how you ship without fear</h2>
+  <div>
+    Unit tests catch regressions in milliseconds, document intent, and force
+    seams that make refactors cheap. This topic drills the modern Swift
+    Testing framework, async assertions, @Observable view models, and the
+    protocol-injection pattern that makes it all click.
+  </div>
+</div>
+
+## Why unit tests first?
+
+Unit tests run in milliseconds per case, have no simulator dependency, and
+exercise the one layer where bugs actually live: your logic. UI tests catch
+regressions at the wrong altitude — slow, flaky, and vague on root cause.
+A healthy pyramid is ~70% unit, ~20% integration, ~10% UI.
+
+<Callout kind="tip" title="Test behavior, not implementation">
+If renaming a private method breaks 10 tests, your tests are coupled to how
+the code works instead of what it does. Assert on observable outputs: return
+values, published state, events sent through a boundary. The internals are
+free to evolve.
+</Callout>
+
+## Swift Testing vs XCTest
+
+<ComparisonCard
+  left={{
+    label: 'Swift Testing',
+    title: 'Default for new code (Xcode 16+)',
+    variant: 'new',
+    points: [
+      '@Test free functions or methods inside a struct suite',
+      '#expect / #require with diffed failure output',
+      '@Test(arguments:) parameterizes cleanly',
+      'Tags, traits, .disabled(...), .timeLimit(...) on the @Test itself',
+      'Runs tests in parallel by default, struct suites isolate state',
+    ],
+  }}
+  right={{
+    label: 'XCTest',
+    title: 'Still required where it matters',
+    variant: 'neutral',
+    points: [
+      'Subclass XCTestCase; setUp / tearDown for lifecycle',
+      'XCTAssertEqual, XCTAssertThrowsError, XCTUnwrap',
+      'measure { } blocks for performance baselines',
+      'Mandatory for XCUITest and performance tests',
+      'Coexists with Swift Testing in the same target',
+    ],
+  }}
+/>
+
+```swift
+import Testing
+
+struct PriceFormatterTests {
+    @Test("formats USD with 2 decimals")
+    func usdDefault() {
+        #expect(PriceFormatter().string(for: 19.9, code: "USD") == "$19.90")
+    }
+
+    @Test(.tags(.currency), arguments: [
+        (0.0, "$0.00"), (1.5, "$1.50"), (1234.5, "$1,234.50"),
+    ])
+    func rendersAmounts(amount: Double, expected: String) {
+        #expect(PriceFormatter().string(for: amount, code: "USD") == expected)
+    }
+
+    @Test(.disabled("pending locale rollout"))
+    func handlesLocaleINRGrouping() { /* ... */ }
+}
+
+extension Tag { @Tag static var currency: Self }
+```
+
+`#expect` keeps running after failure so you see all broken assertions in one
+run; `#require` throws and stops — use it when later lines would crash without
+the value.
+
+## XCTest still earns its keep
+
+```swift
+final class CartTests: XCTestCase {
+    var sut: Cart!
+
+    override func setUp() { super.setUp(); sut = Cart() }
+    override func tearDown() { sut = nil; super.tearDown() }
+
+    func test_addingProduct_increasesCount() {
+        sut.add(.sample)
+        XCTAssertEqual(sut.items.count, 1)
+    }
+
+    func test_total_throwsWhenCurrencyMismatch() {
+        XCTAssertThrowsError(try sut.total(in: "EUR"))
+    }
+
+    func test_checkoutPerformance() {
+        measure { _ = sut.finalize() }
+    }
+}
+```
+
+Swift Testing does not yet cover `measure { }` or XCUITest, so keep XCTest in
+the same test target for those responsibilities.
+
+## The AAA pattern
+
+Every test reads better when it follows **Arrange → Act → Assert**:
+
+```swift
+@Test func applyingCoupon_reducesTotal() {
+    // Arrange
+    let cart = Cart(items: [.sample(price: 100)])
+    let coupon = Coupon(code: "SAVE10", percent: 10)
+
+    // Act
+    cart.apply(coupon)
+
+    // Assert
+    #expect(cart.total == Money(90, "USD"))
+}
+```
+
+Three visual blocks, one behavior per test, no branching inside tests.
+
+## Async code deserves async tests
+
+```swift
+@Test func refreshToken_deduplicatesConcurrentCallers() async throws {
+    let refresher = TokenRefresher(api: StubAuthAPI(delay: .milliseconds(50)))
+    async let a = refresher.token()
+    async let b = refresher.token()
+    async let c = refresher.token()
+    let tokens = try await [a, b, c]
+    #expect(Set(tokens).count == 1) // one network call, one token
+}
+```
+
+For Combine / `AsyncSequence`, collect into an array with a timeout instead
+of building custom expectations:
+
+```swift
+@Test func stream_emitsThreeValuesThenFinishes() async throws {
+    var collected: [Int] = []
+    for try await value in counter.prefix(3) { collected.append(value) }
+    #expect(collected == [1, 2, 3])
+}
+```
+
+## Testing @Observable view models
+
+`@Observable` + `@MainActor` view models are the iOS 17 default. Mark the
+test `@MainActor` so property access is legal and assertions don't hop threads.
+
+```swift
+protocol APIClient: Sendable {
+    func fetchProducts() async throws -> [Product]
+}
+
+@Observable @MainActor
+final class ProductListViewModel {
+    enum State { case idle, loading, loaded([Product]), failed(String) }
+    private(set) var state: State = .idle
+    private let api: APIClient
+    init(api: APIClient) { self.api = api }
+
+    func load() async {
+        state = .loading
+        do { state = .loaded(try await api.fetchProducts()) }
+        catch { state = .failed(error.localizedDescription) }
+    }
+}
+
+// --- test target ---
+final class StubAPIClient: APIClient {
+    var result: Result<[Product], Error> = .success([])
+    var callCount = 0
+    func fetchProducts() async throws -> [Product] {
+        callCount += 1
+        return try result.get()
+    }
+}
+
+@MainActor
+struct ProductListViewModelTests {
+    @Test func load_success_emitsLoadedState() async {
+        let api = StubAPIClient()
+        api.result = .success([.sample, .sample])
+        let sut = ProductListViewModel(api: api)
+
+        await sut.load()
+
+        guard case .loaded(let products) = sut.state
+        else { Issue.record("expected loaded"); return }
+        #expect(products.count == 2)
+        #expect(api.callCount == 1)
+    }
+
+    @Test func load_failure_emitsFailedState() async {
+        let api = StubAPIClient()
+        api.result = .failure(URLError(.timedOut))
+        let sut = ProductListViewModel(api: api)
+
+        await sut.load()
+
+        guard case .failed = sut.state else { Issue.record(); return }
+    }
+}
+```
+
+Two tests, zero mocking library, total isolation from the network.
+
+## Fixtures & seeds
+
+Put factories on your model types in a test-only file so every test reads the
+same way:
+
+```swift
+extension Product {
+    static func sample(
+        id: String = UUID().uuidString,
+        title: String = "Sample",
+        price: Double = 9.99
+    ) -> Product {
+        .init(id: id, title: title, price: price, currency: "USD")
+    }
+}
+```
+
+For deterministic randomness, pass a seeded RNG through the boundary instead
+of using `Int.random(in:)` directly — now the same input always produces the
+same output.
+
+## The TDD rhythm
+
+<StepList
+  steps={[
+    { title: 'Red', description: 'Write the smallest failing test that describes the next behavior. Run it. Confirm it fails for the reason you expect.' },
+    { title: 'Green', description: 'Write the dumbest code that makes it pass. Hard-coded return is fine. Resist the urge to design.' },
+    { title: 'Refactor', description: 'With tests green, clean up duplication, rename, extract. Re-run the suite after every change — it takes milliseconds.' },
+    { title: 'Repeat', description: 'Commit frequently. Each green build is a safe checkpoint.' },
+  ]}
+/>
+
+TDD is a design tool as much as a quality tool — writing the test first
+forces you to pick seams your future self will thank you for.
+
+## Coverage — the metric to use carefully
+
+Enable in the scheme: **Product → Scheme → Edit Scheme → Test → Options →
+Gather coverage for all targets**. The coverage pane appears in the Report
+Navigator after a run, and per-line annotations toggle from the editor gutter.
+
+Line coverage of 80% means nothing if the tests assert `XCTAssertNotNil(vm)`.
+What matters is **branch coverage on logic you care about** — pricing,
+permissions, error paths. Treat coverage as a smoke detector, not a KPI.
+
+## Exercises
+
+1. Convert a `CartTests: XCTestCase` with five tests to Swift Testing. Keep a
+   single `measure { }` test in XCTest and confirm both run in the same target.
+2. Build a `TokenRefresher` actor that de-duplicates concurrent refresh calls
+   and prove the behavior with three `async let` callers receiving the same
+   token.
+
+## Next
+
+Continue to **[Topic 2 · UI, Snapshot & Integration Tests](/docs/testing-quality/topic-2-ui-testing)**.

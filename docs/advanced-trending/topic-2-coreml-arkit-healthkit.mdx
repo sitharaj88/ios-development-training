@@ -1,0 +1,227 @@
+---
+id: topic-2-coreml-arkit-healthkit
+title: Topic 2 · Core ML, ARKit & HealthKit
+sidebar_label: 2 · ML, AR & Health
+description: On-device ML with Core ML + Vision, spatial tracking with ARKit and RealityKit, and HealthKit's permission model for production health features.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 12 · Topic 2 · 55 min</span>
+  <h2>The frameworks that make iOS apps feel magical</h2>
+  <div>
+    Three frameworks turn "just another CRUD app" into something only possible
+    on Apple hardware: Core ML runs trained models on the Neural Engine,
+    ARKit tracks the world in six degrees of freedom, and HealthKit lets you
+    read workouts and heart rate with the user's consent. This topic is the
+    practitioner's tour.
+  </div>
+</div>
+
+## Core ML — the on-device ML runtime
+
+Core ML runs compiled `.mlmodelc` bundles on the best available compute unit —
+Neural Engine, GPU, or CPU. You ship the model inside the app (or download it
+lazily with `MLModelCollection` / on-demand resources), and inference runs
+without a network.
+
+**Typical pipeline:**
+
+```text
+PyTorch / TensorFlow / Keras model
+  → coremltools.convert(...)        # produces MyModel.mlpackage
+  → Drag into Xcode                  # Xcode auto-compiles to .mlmodelc and
+                                     #   generates a Swift class named MyModel
+  → Use MyModel() in code, or wrap in Vision for image tasks
+```
+
+Xcode's code generation gives you a typed Swift class: inputs and outputs
+become properties. You rarely touch the raw MLMultiArray tensor type — Vision
+and NaturalLanguage wrap it for you.
+
+## Vision + Core ML — image classification end-to-end
+
+```swift
+import Vision
+import CoreML
+import UIKit
+
+final class PetClassifier {
+    private let request: VNCoreMLRequest
+
+    init() throws {
+        let config = MLModelConfiguration()
+        config.computeUnits = .all
+        let coreMLModel = try PetClassifierModel(configuration: config).model
+        let visionModel  = try VNCoreMLModel(for: coreMLModel)
+        self.request = VNCoreMLRequest(model: visionModel)
+        self.request.imageCropAndScaleOption = .centerCrop
+    }
+
+    func classify(_ image: UIImage) async throws -> (label: String, confidence: Float) {
+        guard let cg = image.cgImage else { throw ClassifyError.noCGImage }
+        let handler = VNImageRequestHandler(cgImage: cg, orientation: .up)
+
+        return try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try handler.perform([self.request])
+                    guard let top = (self.request.results as? [VNClassificationObservation])?.first else {
+                        throw ClassifyError.noResults
+                    }
+                    cont.resume(returning: (top.identifier, top.confidence))
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    enum ClassifyError: Error { case noCGImage, noResults }
+}
+```
+
+`VNImageRequestHandler.perform` is synchronous and CPU-bound; wrap it in a
+continuation off the main actor so SwiftUI stays responsive. For video streams,
+use `VNSequenceRequestHandler` to keep temporal context between frames.
+
+## Create ML — training without leaving the Mac
+
+Open `Create ML` (bundled with Xcode). Drag a labelled dataset (one folder per
+class for image classification; a CSV for text or tabular). It uses transfer
+learning from a pre-trained backbone, trains in minutes on Apple Silicon, and
+exports a `.mlmodel` you can drop straight into Xcode. Excellent for
+product-specific classifiers where you don't need PyTorch.
+
+## ARKit — world tracking in six degrees of freedom
+
+```swift
+import ARKit
+import RealityKit
+
+final class ARPlayerView: ARView {
+    func start() {
+        let config = ARWorldTrackingConfiguration()
+        config.planeDetection = [.horizontal, .vertical]
+        config.environmentTexturing = .automatic
+        session.run(config)
+
+        // Drop a red ball on a tapped surface
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap)))
+    }
+
+    @objc private func handleTap(_ sender: UITapGestureRecognizer) {
+        let point = sender.location(in: self)
+        guard let result = raycast(from: point, allowing: .estimatedPlane, alignment: .horizontal).first else { return }
+        let anchor = AnchorEntity(world: result.worldTransform)
+        let ball   = ModelEntity(mesh: .generateSphere(radius: 0.05),
+                                 materials: [SimpleMaterial(color: .red, isMetallic: false)])
+        anchor.addChild(ball)
+        scene.addAnchor(anchor)
+    }
+}
+```
+
+Key primitives:
+
+- `ARSession` — owns the camera + motion pipeline.
+- `ARWorldTrackingConfiguration` — six DoF, plane detection, people occlusion.
+- `ARFaceTrackingConfiguration` — Face ID-capable devices; blend shapes.
+- `ARImageTrackingConfiguration` — anchor to printed reference images.
+- **LiDAR** (Pro iPhones and iPads) gives you scene reconstruction and precise
+  meshes via `ARMeshAnchor`.
+
+## RealityKit — the 3D scene graph
+
+RealityKit is Apple's modern 3D engine (replacing SceneKit for new work). It
+uses an **ECS** model:
+
+- **Entity** — a node in the scene graph.
+- **Component** — data attached to an entity (Transform, Model, Collision, Physics).
+- **System** — logic that runs over all entities with a given component set.
+
+```swift
+let car = ModelEntity(mesh: .generateBox(size: 0.2),
+                      materials: [SimpleMaterial(color: .blue, isMetallic: true)])
+car.components.set(CollisionComponent(shapes: [.generateBox(size: .init(repeating: 0.2))]))
+car.components.set(PhysicsBodyComponent(massProperties: .default, mode: .dynamic))
+```
+
+**Reality Composer Pro** ships with Xcode 15+. Author scenes, materials
+(including Shader Graph), and USD assets visually, then load them at runtime:
+
+```swift
+let scene = try await Entity(named: "Playground", in: realityKitContentBundle)
+```
+
+## HealthKit — consent is per data type
+
+HealthKit stores 100+ data types. Authorization is requested **per type, per
+direction (read/write)** and the user can deny individual types:
+
+```swift
+import HealthKit
+
+let store = HKHealthStore()
+let readTypes: Set = [
+    HKQuantityType(.heartRate),
+    HKQuantityType(.stepCount),
+    HKObjectType.workoutType(),
+]
+let writeTypes: Set = [HKQuantityType(.activeEnergyBurned)]
+try await store.requestAuthorization(toShare: writeTypes, read: readTypes)
+```
+
+**Reading samples:**
+
+```swift
+let descriptor = HKSampleQueryDescriptor(
+    predicates: [.quantitySample(type: HKQuantityType(.heartRate),
+                                 predicate: HKQuery.predicateForSamples(withStart: Date.now.addingTimeInterval(-3600),
+                                                                        end: .now))],
+    sortDescriptors: [SortDescriptor(\.startDate, order: .reverse)],
+    limit: 100
+)
+let samples = try await descriptor.result(for: store)
+```
+
+**Background delivery** wakes your app on new samples (even when suspended):
+
+```swift
+try await store.enableBackgroundDelivery(for: HKQuantityType(.heartRate), frequency: .immediate)
+let query = HKObserverQuery(sampleType: HKQuantityType(.heartRate), predicate: nil) { _, completion, _ in
+    Task { await processNewHeartRates(); completion() }
+}
+store.execute(query)
+```
+
+<Callout kind="warning" title="HealthKit Info.plist strings must be specific">
+You need TWO entries: `NSHealthShareUsageDescription` (read) and `NSHealthUpdateUsageDescription` (write). App Review reads these verbatim and rejects generic text like "We use HealthKit." Write something like "Running Tracker reads your workout and heart-rate samples to compute weekly mileage." Be specific about which data types and why.
+</Callout>
+
+## Speech and Natural Language — the quick hits
+
+- **Speech (`SFSpeechRecognizer`)** — on-device or cloud speech-to-text. Needs
+  `NSSpeechRecognitionUsageDescription` + microphone permission.
+- **Natural Language (`NLTagger`, `NLEmbedding`)** — tokenization, language ID,
+  sentiment analysis, word and sentence embeddings, all on-device. Great for
+  search ranking and content moderation.
+
+## Recommended helpers
+
+<LibraryGrid libraries={[
+  { name: 'Core ML', tagline: 'On-device ML runtime', description: 'Apple first-party. Neural Engine acceleration, model encryption, on-device personalization.', url: 'https://developer.apple.com/documentation/coreml', recommended: true },
+  { name: 'coremltools', tagline: 'Model conversion', description: 'Python package to convert PyTorch / TF / scikit-learn models to Core ML format.', url: 'https://github.com/apple/coremltools', recommended: true },
+  { name: 'RealityKit Content', tagline: 'Spatial assets', description: 'Reality Composer Pro bundles + Swift API for loading USDZ scenes authored visually.', url: 'https://developer.apple.com/documentation/realitykit' },
+  { name: 'Google ML Kit (iOS)', tagline: 'Pre-built ML features', description: 'Barcode scanning, text recognition, pose detection — ready-to-use models for common tasks.', url: 'https://developers.google.com/ml-kit' },
+]} />
+
+## Exercises
+
+1. **Create ML classifier end-to-end.** Gather 100 labelled images across 3 classes, train a Create ML image classifier, drop the `.mlmodel` into an app, and display top-3 predictions in real time using `AVCaptureSession` frames fed into Vision.
+2. **HealthKit + background delivery.** Build a step-count widget that receives background updates via `HKObserverQuery`, writes the latest total to an App Group `UserDefaults`, and reloads its WidgetKit timeline.
+
+## Next
+
+Continue to **[Topic 3 · watchOS, visionOS & Accessibility](/docs/advanced-trending/topic-3-platforms-accessibility)** — ship across Apple's full device lineup, inclusively.

@@ -1,0 +1,236 @@
+---
+id: topic-2-keychain-cloudkit
+title: Topic 2 · Keychain & CloudKit
+sidebar_label: 2 · Keychain & CloudKit
+description: Keychain Services, access groups, biometric gating, OAuth token storage, CloudKit databases, CKRecord, subscriptions, and NSUbiquitousKeyValueStore.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 05 · Topic 2 · Security & sync</span>
+  <h2>Secrets that survive, data that follows</h2>
+  <div>
+    Two storage systems that beginners get wrong constantly: Keychain (because the
+    C API is hostile) and CloudKit (because it looks like a server but isn't). This
+    topic teaches the patterns that hold up in production.
+  </div>
+</div>
+
+## Keychain — the only place for secrets
+
+Keychain is an encrypted, device-bound store that survives app deletion (by default)
+and can be gated behind biometrics. It's the **only** Apple-sanctioned place for
+tokens, passwords, API keys per user, and compliance-relevant data.
+
+The raw API is CoreFoundation-flavoured and takes dictionaries of `CFString` keys.
+The four you'll use 90% of the time:
+
+| Key | Purpose |
+|-----|---------|
+| `kSecClass` | Item type — almost always `kSecClassGenericPassword` |
+| `kSecAttrService` | Your namespace — typically the bundle ID + a purpose |
+| `kSecAttrAccount` | The "username" — an email, user ID, or token type |
+| `kSecValueData` | The secret, as `Data` |
+
+## A wrapper you can actually use
+
+```swift
+import Security
+import Foundation
+
+enum KeychainError: Error { case status(OSStatus), itemNotFound, unexpected }
+
+struct Keychain {
+    let service: String
+
+    func save(_ data: Data, account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String:   data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        SecItemDelete(query as CFDictionary)              // idempotent upsert
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.status(status) }
+    }
+
+    func read(account: String) throws -> Data {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String:  true,
+            kSecMatchLimit as String:  kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status != errSecItemNotFound else { throw KeychainError.itemNotFound }
+        guard status == errSecSuccess, let data = result as? Data
+        else { throw KeychainError.status(status) }
+        return data
+    }
+
+    func delete(account: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String:       kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound
+        else { throw KeychainError.status(status) }
+    }
+}
+```
+
+### Accessibility is a choice
+
+`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` is the right default for most
+tokens — accessible after the user unlocks once per boot, never synced, never
+restored to a different device. For refresh-on-launch tokens, consider
+`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (requires the device to be unlocked
+*now*).
+
+### Biometric gating with `SecAccessControl`
+
+```swift
+var error: Unmanaged<CFError>?
+let access = SecAccessControlCreateWithFlags(
+    nil,
+    kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+    [.biometryCurrentSet, .privateKeyUsage],
+    &error
+)!
+```
+
+Pass `access` as `kSecAttrAccessControl` and the read will prompt for Face ID /
+Touch ID. `biometryCurrentSet` invalidates the item if the user adds a new
+fingerprint or face — a critical property for high-value secrets.
+
+<Callout kind="warning" title="Keychain is not a general-purpose KV store">
+Keychain reads are slow (~1ms each), capped in size (~1MB per item), and
+synchronized access isn't free. Don't cache your entire user profile there.
+Store one item — a token or a key — and keep everything else in SwiftData.
+</Callout>
+
+## Sharing across your apps: access groups
+
+App extensions, widgets, and companion apps can share Keychain items via an
+**access group**. Enable the Keychain Sharing capability, add a group like
+`$(AppIdentifierPrefix)com.example.shared`, then:
+
+```swift
+let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: service,
+    kSecAttrAccount as String: account,
+    kSecAttrAccessGroup as String: "com.example.shared",
+    // …
+]
+```
+
+Now your widget can read the auth token the main app wrote.
+
+## Storing OAuth tokens
+
+The canonical pattern: two Keychain items per user — one for the access token
+(short-lived, re-fetched often), one for the refresh token (long-lived,
+biometric-gated). Never store them together as one blob — you want the access
+token readable without Face ID but the refresh token not.
+
+```swift
+let kc = Keychain(service: "com.example.app.tokens")
+try kc.save(Data(accessToken.utf8), account: "access")
+try kc.save(Data(refreshToken.utf8), account: "refresh")
+```
+
+Pair this with the refresh-token actor from Module 06 Topic 3.
+
+## CloudKit — iCloud as your backend
+
+CloudKit is Apple's managed backend. You get three databases per container:
+
+- **Public** — shared across all users. Posts in a social app, ratings, public catalogue.
+- **Private** — per-user, backed by their iCloud quota (free up to 10GB per user).
+- **Shared** — records one user shares with another (like a shared note).
+
+A record is a `CKRecord` with a `recordType` and typed fields:
+
+```swift
+import CloudKit
+
+let record = CKRecord(recordType: "Note")
+record["title"] = "Groceries"
+record["body"]  = "Milk, eggs, coffee"
+record["tags"]  = ["home"] as CKRecordValue
+
+let db = CKContainer.default().privateCloudDatabase
+let saved = try await db.save(record)
+```
+
+### Push updates with `CKSubscription`
+
+Instead of polling, register a subscription and the server pushes a silent
+notification when anything matching your predicate changes:
+
+```swift
+let sub = CKQuerySubscription(
+    recordType: "Note",
+    predicate: NSPredicate(value: true),
+    options: [.firesOnRecordCreation, .firesOnRecordUpdate, .firesOnRecordDeletion]
+)
+sub.notificationInfo = {
+    let n = CKSubscription.NotificationInfo()
+    n.shouldSendContentAvailable = true           // silent
+    return n
+}()
+try await CKContainer.default().privateCloudDatabase.save(sub)
+```
+
+### SwiftData + CloudKit
+
+The easy path — let SwiftData do the plumbing (see Topic 1). Under the hood it
+uses `NSPersistentCloudKitContainer` and records your models as `CKRecord`s
+with schema derived from `@Model`.
+
+## NSUbiquitousKeyValueStore — the forgotten cousin
+
+For tiny preferences you want synced across a user's devices (theme, last-viewed
+screen, settings) without setting up CloudKit:
+
+```swift
+let kv = NSUbiquitousKeyValueStore.default
+kv.set("dark", forKey: "theme")
+kv.synchronize()                           // hint, not guarantee
+```
+
+Hard limits: 1MB total, 1024 keys, values up to 1MB each. Fine for prefs,
+useless for data.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'KeychainAccess', tagline: 'Idiomatic Keychain', description: 'Swift API over Security.framework — subscript access, error handling that makes sense.', url: 'https://github.com/kishikawakatsumi/KeychainAccess', recommended: true },
+  { name: 'Valet', tagline: 'Square’s Keychain', description: 'Opinionated wrapper from Square with strong defaults for access control and app groups.', url: 'https://github.com/square/Valet' },
+  { name: 'SimpleKeychain', tagline: 'Minimal wrapper', description: 'Auth0’s tiny Keychain helper — the smallest viable abstraction.', url: 'https://github.com/auth0/SimpleKeychain' },
+]} />
+
+## Key takeaways
+
+- **Keychain is where secrets go** — nowhere else. Plain UserDefaults, SwiftData, and on-device files are all wrong.
+- **Pick accessibility carefully** — `AfterFirstUnlockThisDeviceOnly` is the right default.
+- **Biometric-gate high-value items** with `SecAccessControl` and `.biometryCurrentSet`.
+- **CloudKit gives you a free backend** — but it's per-user iCloud quota, not a general DB.
+- **NSUbiquitousKeyValueStore** syncs small prefs with zero setup.
+
+## Practice exercises
+
+1. Build a `TokenStore` that stores access + refresh tokens in two Keychain items, biometric-gates the refresh token, and clears everything on sign-out.
+2. Ship a CloudKit-backed note app with a private DB, a `CKQuerySubscription` for background updates, and graceful handling of the user signing out of iCloud.
+
+## Next module
+
+Continue to **[Module 06 · Networking & API Integration](/docs/networking-api/overview)** — now that you can store credentials, let's use them to talk to servers.

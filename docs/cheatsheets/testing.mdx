@@ -1,0 +1,292 @@
+---
+id: testing
+title: Testing Cheatsheet
+sidebar_label: Testing
+description: XCTest, Swift Testing, XCUITest, async testing, snapshotting, mocking, and coverage — all in one page.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+The test APIs you'll actually use. Prefer **Swift Testing** for new code;
+XCTest is still dominant across existing codebases.
+
+## Swift Testing (iOS 17+ / Xcode 16+)
+
+```swift
+import Testing
+@testable import MyApp
+
+@Test func sumsTwoNumbers() {
+    #expect(2 + 2 == 4)
+}
+
+@Test("User full name formats correctly")
+func fullName() {
+    let user = User(first: "Ada", last: "Lovelace")
+    #expect(user.fullName == "Ada Lovelace")
+}
+
+// Async
+@Test func fetchesUser() async throws {
+    let client = APIClient.test
+    let user = try await client.fetchUser(id: .testID)
+    #expect(user.name == "Ada")
+}
+
+// Parameterised
+@Test(arguments: [1, 2, 3, 10])
+func squaresArePositive(_ n: Int) {
+    #expect(n * n > 0)
+}
+
+// Tags
+@Test(.tags(.critical)) func login() { ... }
+
+// Skip / disable
+@Test(.disabled("Flaky on CI")) func flaky() { ... }
+```
+
+## Swift Testing — assertions
+
+```swift
+#expect(x == y)
+#expect(x != y)
+#expect(result.isEmpty)
+#expect(error is NetworkError)
+
+// Throw expectations
+#expect(throws: DecodingError.self) {
+    try decode(invalidJSON)
+}
+#expect(throws: Never.self) {
+    try decode(validJSON)
+}
+
+// Confirmation: assert something happens N times
+await confirmation("callback fires") { fired in
+    subject.onReady = { fired() }
+    subject.start()
+}
+```
+
+## XCTest (classic)
+
+```swift
+import XCTest
+@testable import MyApp
+
+final class CartTests: XCTestCase {
+    var sut: Cart!
+
+    override func setUpWithError() throws {
+        sut = Cart()
+    }
+
+    override func tearDownWithError() throws {
+        sut = nil
+    }
+
+    func testAddingItemIncreasesCount() {
+        sut.add(.fixture)
+        XCTAssertEqual(sut.count, 1)
+    }
+
+    func testFetchAsync() async throws {
+        let user = try await APIClient.stub.fetchUser()
+        XCTAssertEqual(user.id, .testID)
+    }
+}
+```
+
+## XCTest — assertions
+
+```swift
+XCTAssertEqual(a, b)
+XCTAssertNotEqual(a, b)
+XCTAssertTrue(flag)
+XCTAssertNil(optional)
+XCTAssertNotNil(optional)
+XCTAssertThrowsError(try parse(bad))
+XCTAssertNoThrow(try parse(good))
+XCTAssertGreaterThan(count, 0)
+```
+
+## Expectations (callback-based async in XCTest)
+
+```swift
+func testCallbackFires() {
+    let exp = expectation(description: "onReady")
+    subject.onReady = { exp.fulfill() }
+    subject.start()
+    wait(for: [exp], timeout: 1.0)
+}
+```
+
+Prefer `async`/`await` + Swift Testing over expectations for new code.
+
+## Mocking via protocols
+
+The cleanest, library-free mocking approach.
+
+```swift
+protocol APIClient {
+    func fetchUser(id: UUID) async throws -> User
+}
+
+struct LiveAPIClient: APIClient { ... }
+
+struct StubAPIClient: APIClient {
+    var fetchUserResult: Result<User, Error> = .success(.fixture)
+    func fetchUser(id: UUID) async throws -> User {
+        try fetchUserResult.get()
+    }
+}
+
+// In a test
+@Test func loadShowsUser() async throws {
+    let vm = HomeViewModel(client: StubAPIClient())
+    await vm.load()
+    #expect(vm.user?.name == "Ada")
+}
+```
+
+## Fixtures
+
+```swift
+extension User {
+    static let fixture = User(
+        id: .init(uuidString: "00000000-0000-0000-0000-000000000001")!,
+        name: "Ada",
+        email: "ada@example.com"
+    )
+}
+```
+
+One fixture per model → test data stays centralised and meaningful.
+
+## Snapshot testing (third-party)
+
+Using [pointfreeco/swift-snapshot-testing](https://github.com/pointfreeco/swift-snapshot-testing):
+
+```swift
+import SnapshotTesting
+import SwiftUI
+
+@Test @MainActor func homeViewSnapshot() {
+    let view = HomeView(vm: .fixture)
+    assertSnapshot(of: view, as: .image(layout: .device(config: .iPhone13)))
+}
+```
+
+First run records a reference image; subsequent runs diff against it.
+
+## UI tests (XCUITest)
+
+```swift
+import XCTest
+
+final class CheckoutUITests: XCTestCase {
+    override func setUp() {
+        continueAfterFailure = false
+    }
+
+    func testCheckoutFlow() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-uiTest"]
+        app.launch()
+
+        app.buttons["Add to cart"].tap()
+        app.buttons["Cart"].tap()
+
+        let total = app.staticTexts["cart-total"]
+        XCTAssertTrue(total.waitForExistence(timeout: 2))
+        XCTAssertTrue(total.label.contains("$"))
+    }
+}
+```
+
+Expose stable identifiers from SwiftUI with `.accessibilityIdentifier("cart-total")`.
+
+## Seed data via launch arguments
+
+```swift
+// In the app
+if ProcessInfo.processInfo.arguments.contains("-uiTest") {
+    container = ModelContainer.inMemory
+    container.seed(.uiTestFixtures)
+}
+```
+
+## Coverage
+
+Enable in **Scheme → Test → Options → Gather coverage for all targets**. View
+in **Report navigator → Coverage**. Use `xccov` to emit JSON for CI.
+
+```bash
+xcrun xccov view --report --json result.xcresult > coverage.json
+```
+
+Target coverage: 60%+ for presentation, 80%+ for domain + data. 100% is a
+bad goal — chase meaningful assertions, not line hits.
+
+## Testing time & async flow
+
+```swift
+// Fake clock
+protocol Clock {
+    func now() -> Date
+}
+struct FakeClock: Clock {
+    var time: Date
+    func now() -> Date { time }
+}
+
+// Swift Clock API
+func delayedThing() async throws {
+    try await Task.sleep(for: .milliseconds(100))
+}
+
+@Test func delayedThingEvents() async throws {
+    let clock = ImmediateClock()     // from Point-Free's swift-clocks
+    try await delayedThing(clock: clock)
+}
+```
+
+## Testing `@Observable` / `@MainActor` types
+
+```swift
+@Test @MainActor func viewModelLoadsData() async {
+    let vm = HomeViewModel(client: StubAPIClient())
+    await vm.load()
+    #expect(vm.items.count == 2)
+}
+```
+
+## Running from the command line
+
+```bash
+xcodebuild \
+  -scheme MyApp \
+  -destination 'platform=iOS Simulator,name=iPhone 15' \
+  test
+
+# Fastlane
+fastlane scan
+```
+
+## Common pitfalls
+
+- **Testing SwiftUI by re-inventing it** — prefer view-model tests + snapshot
+  tests for layout.
+- **Relying on real network in unit tests** — inject a protocol, use a stub.
+- **Global singletons in tests** — they leak state between tests. Inject.
+- **Over-mocking** — if a mock has no assertions, it's dead weight. Verify
+  *behaviour*, not that a method was called.
+- **Flaky async waits** — fixed `sleep` is never reliable. Use `expectation`
+  fulfilment, `waitForExistence`, or deterministic clocks.
+
+## See also
+
+- [Module 09 — Testing & Quality](/docs/testing-quality/overview)
+- [Swift cheatsheet](/docs/cheatsheets/swift)
+- [Concurrency cheatsheet](/docs/cheatsheets/concurrency)

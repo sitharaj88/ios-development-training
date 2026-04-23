@@ -1,0 +1,317 @@
+---
+id: topic-2-state-dataflow
+title: Topic 2 · State & Data Flow
+sidebar_label: 2 · State & Data
+description: The iOS 17 Observation model — @State, @Binding, @Bindable, @Observable, @Environment, @AppStorage, @FocusState and the tracked-read dependency graph.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, SwiftUIStateDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 2 · ~4 hours · the observation model</span>
+  <h2>State is the engine — pick the right wrapper for each job</h2>
+  <div>
+    SwiftUI re-renders when tracked state changes. "Tracked" is a precise term:
+    the framework records which properties your <code>body</code> reads and only
+    invalidates when <em>those</em> change. Understanding this graph is the
+    difference between a snappy app and one that re-renders the world on every
+    keystroke.
+  </div>
+</div>
+
+## The render loop, in one diagram
+
+<Diagram
+  title="How a state change becomes a pixel change"
+  caption="A write to tracked state invalidates only the views that read it. Body recomputes, SwiftUI diffs the view tree, the renderer commits the delta."
+>
+  <SwiftUIStateDiagram />
+</Diagram>
+
+Every property wrapper in this topic exists to plug a value into that graph in
+a specific way — local, shared, cross-cutting, persisted, or focus-bound.
+
+## What you'll learn
+
+<StepList
+  steps={[
+    { title: '@State & @Binding', description: 'Local source-of-truth for a view, and how to hand write-access to a child.' },
+    { title: '@Observable & @Bindable', description: 'iOS 17 macro-based observation for shared reference types, plus two-way bindings to their properties.' },
+    { title: '@Environment', description: 'Dependency injection by type — from system values to your own EnvironmentKey.' },
+    { title: '@AppStorage & @SceneStorage', description: 'Declarative UserDefaults and per-scene restoration.' },
+    { title: '@FocusState', description: 'Which text field is first responder, declaratively.' },
+  ]}
+/>
+
+## @State — local, value-typed truth
+
+`@State` is for data that belongs to a view and no-one else: a toggle, a
+selected tab, a text field's current value. Under the hood, SwiftUI stores it
+outside the struct (view structs are re-created constantly) and keys it by
+view identity.
+
+```swift
+struct Counter: View {
+    @State private var count = 0
+    var body: some View {
+        Stepper("Count: \(count)", value: $count, in: 0...99)
+    }
+}
+```
+
+- `count` is a struct property; it looks like it'd reset every render.
+- SwiftUI's storage keeps it alive across body invocations.
+- `$count` is the projected `Binding<Int>` — a read/write reference.
+
+<Callout kind="warning" title="@State on reference types is an antipattern">
+<code>@State</code> only signals "this view owns this value." Point it at a
+<code>class</code> and SwiftUI will happily hold the reference forever but
+never notice any internal mutation — because classes don't change identity
+when their fields do. Use <code>@State</code> for value types, and
+<code>@Observable</code> for reference types. If you catch yourself writing
+<code>@State var vm = MyViewModel()</code>, stop.
+</Callout>
+
+## @Binding — a write-access reference
+
+A `Binding<Value>` is a projection: a getter and a setter. Pass it down to let
+a child mutate parent state without owning it.
+
+```swift
+struct NameField: View {
+    @Binding var name: String
+    var body: some View {
+        TextField("Name", text: $name)
+    }
+}
+
+// Parent
+@State private var name = ""
+NameField(name: $name)
+```
+
+Bindings compose. You can project into a member with `$model.name`, derive
+one with `Binding(get:set:)`, or make a constant for previews:
+`NameField(name: .constant("Ada"))`.
+
+## @Observable — shared, reference-typed model
+
+The `@Observable` macro (iOS 17+) replaces the old `ObservableObject` +
+`@Published` ceremony. It synthesises per-property change tracking so
+SwiftUI only re-renders views that actually read the property that changed.
+
+```swift
+@Observable
+final class Cart {
+    var items: [CartItem] = []
+    var coupon: String?
+    var total: Decimal {
+        items.reduce(0) { $0 + $1.price }
+    }
+}
+```
+
+Use it with plain `let`/`var` properties on the view:
+
+```swift
+struct CartScreen: View {
+    let cart: Cart                 // read-only reads
+    var body: some View {
+        Text(cart.total, format: .currency(code: "USD"))
+    }
+}
+```
+
+If you need two-way bindings to properties (e.g. binding a `TextField` to
+`cart.coupon`), use `@Bindable`:
+
+```swift
+struct CouponField: View {
+    @Bindable var cart: Cart
+    var body: some View {
+        TextField("Coupon", text: Binding($cart.coupon, replacingNilWith: ""))
+    }
+}
+```
+
+### Observation vs ObservableObject
+
+<ComparisonCard
+  left={{
+    label: 'Legacy (iOS 13–16)',
+    title: 'ObservableObject + @Published',
+    variant: 'warn',
+    points: [
+      '@StateObject / @ObservedObject / @EnvironmentObject trio',
+      'objectWillChange fires for ANY @Published mutation',
+      'Views re-render even if they didn\'t read the changed property',
+      'Combine-based — drags Combine into every view model',
+    ],
+  }}
+  right={{
+    label: 'Modern (iOS 17+)',
+    title: '@Observable + @Bindable',
+    variant: 'new',
+    points: [
+      'Single macro; no protocol boilerplate',
+      'Per-property tracking — only reading views invalidate',
+      '@Bindable creates bindings on demand, no @ObservedObject',
+      'No Combine dependency; pure Swift',
+    ],
+  }}
+/>
+
+```swift
+// Before — iOS 16 and earlier
+final class Cart: ObservableObject {
+    @Published var items: [CartItem] = []
+}
+struct CartScreen: View {
+    @StateObject private var cart = Cart()
+    // @ObservedObject if injected, @EnvironmentObject if from env
+}
+
+// After — iOS 17+
+@Observable final class Cart {
+    var items: [CartItem] = []
+}
+struct CartScreen: View {
+    @State private var cart = Cart()  // @State is correct here — owns the instance
+}
+```
+
+Yes, `@State` *does* hold the `Cart` — but only for lifecycle (keep the
+instance alive across re-renders). Observation tracking comes from
+`@Observable`, not `@State`.
+
+## @Environment — injection by type
+
+The environment is a type-keyed dictionary that flows down the view tree.
+Reads:
+
+```swift
+@Environment(\.colorScheme) private var colorScheme
+@Environment(\.dismiss) private var dismiss
+@Environment(\.horizontalSizeClass) private var sizeClass
+```
+
+Inject your own `@Observable` services at the top of the tree:
+
+```swift
+@main
+struct ShopApp: App {
+    @State private var session = UserSession()
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(session)   // iOS 17 overload for @Observable
+        }
+    }
+}
+
+struct RootView: View {
+    @Environment(UserSession.self) private var session
+    var body: some View { Text(session.currentUser?.name ?? "Guest") }
+}
+```
+
+### Custom EnvironmentKey
+
+For non-observable values (flags, configuration, callbacks), define a key:
+
+```swift
+private struct APIBaseURLKey: EnvironmentKey {
+    static let defaultValue = URL(string: "https://api.example.com")!
+}
+
+extension EnvironmentValues {
+    var apiBaseURL: URL {
+        get { self[APIBaseURLKey.self] }
+        set { self[APIBaseURLKey.self] = newValue }
+    }
+}
+
+// Use
+RootView().environment(\.apiBaseURL, URL(string: "https://staging.api.example.com")!)
+@Environment(\.apiBaseURL) var apiBaseURL
+```
+
+## @AppStorage — declarative UserDefaults
+
+Binds a view property to `UserDefaults`. Reads are cached, writes go through.
+
+```swift
+struct SettingsView: View {
+    @AppStorage("useDarkMode") private var useDarkMode = false
+    @AppStorage("fontScale")   private var fontScale = 1.0
+    var body: some View {
+        Toggle("Dark Mode", isOn: $useDarkMode)
+        Slider(value: $fontScale, in: 0.8...1.4)
+    }
+}
+```
+
+`@SceneStorage` is the same idea but per-scene — ideal for restoring a
+text editor's cursor position across launches on iPad multitasking.
+
+## @FocusState — which field is focused
+
+```swift
+enum Field { case email, password }
+
+struct LoginForm: View {
+    @FocusState private var focus: Field?
+    @State private var email = ""
+    @State private var password = ""
+
+    var body: some View {
+        Form {
+            TextField("Email", text: $email).focused($focus, equals: .email)
+            SecureField("Password", text: $password).focused($focus, equals: .password)
+            Button("Next") { focus = .password }
+        }
+        .onSubmit { focus = (focus == .email) ? .password : nil }
+    }
+}
+```
+
+Use it for auto-advance, toolbar "Done" buttons, and dismissing the keyboard
+declaratively with `focus = nil`.
+
+## The tracked-read mental model
+
+SwiftUI tracks which properties your `body` *reads* during evaluation. When
+one of those properties is written, the view is invalidated and `body` runs
+again. Corollaries:
+
+- Reading `cart.items.count` tracks `items`. Writing `cart.coupon` doesn't
+  re-render that view.
+- Reading a property inside a child view only invalidates the child, not the
+  parent — keep state as local as possible.
+- Computed properties are tracked through the properties they read. `total`
+  depends on `items`, so reading `cart.total` tracks `items`.
+
+This is why `@Observable` is such a big win over `ObservableObject`: with
+Combine-backed `@Published`, every mutation fires `objectWillChange` and
+invalidates every view holding the object.
+
+## Key takeaways
+
+- **`@State` for local value types, `@Observable` for shared reference types.** Stop mixing them up.
+- **`@Bindable` replaces `@ObservedObject`** for getting two-way bindings.
+- **Environment is type-keyed DI** — use it for services, theme, configuration.
+- **Observation tracks per-property reads** — views only re-render when the properties they actually read change.
+- **`@AppStorage` and `@FocusState` are declarative sugar** for common imperative chores.
+
+## Practice exercises
+
+1. Convert a legacy `ObservableObject` view model (with three `@Published`
+   properties) to `@Observable`. Demonstrate, with an `onChange` logger, that
+   a view reading only one property no longer re-renders when the others
+   change.
+2. Build a sign-up form with four `TextField`s, using `@FocusState` to
+   auto-advance through them and dismiss the keyboard on the last field.
+
+## Next
+
+Continue to **[Topic 3 · Navigation & Lists](/docs/swiftui/topic-3-navigation-lists)** to wire state to routes and build scrolling screens that don't jank.

@@ -1,0 +1,295 @@
+---
+id: concurrency
+title: Swift Concurrency Cheatsheet
+sidebar_label: Concurrency
+description: Tasks, actors, async sequences, cancellation, MainActor, and Sendable — the modern Swift concurrency model in one page.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+The runtime model behind every modern Apple API. Targets Swift 6 strict
+concurrency.
+
+## Mental model
+
+<Callout kind="info" title="Three primitives">
+**Tasks** = units of async work. **Actors** = serialize access to state.
+**Sendable** = the compiler's promise that a value is safe to hand across an
+isolation boundary.
+</Callout>
+
+## Running async work
+
+```swift
+// Inherits caller's actor
+Task {
+    let user = try await fetch()
+    print(user)
+}
+
+// Unstructured — does NOT inherit isolation
+Task.detached(priority: .background) {
+    await heavyWork()
+}
+
+// Launch and forget, but keep a handle
+let task = Task { try await fetch() }
+let user = try await task.value
+task.cancel()
+```
+
+## async/await
+
+```swift
+func fetchUser(id: UUID) async throws -> User {
+    let (data, _) = try await URLSession.shared.data(from: userURL(id))
+    return try JSONDecoder().decode(User.self, from: data)
+}
+
+// Sequential
+let user     = try await fetchUser(id: id)
+let profile  = try await fetchProfile(for: user)
+
+// Parallel
+async let userF    = fetchUser(id: id)
+async let profileF = fetchProfile(for: id)
+let (user, profile) = try await (userF, profileF)
+```
+
+## TaskGroup
+
+Use when the number of child tasks is dynamic.
+
+```swift
+func fetchAll(_ ids: [UUID]) async throws -> [User] {
+    try await withThrowingTaskGroup(of: User.self) { group in
+        for id in ids {
+            group.addTask { try await fetchUser(id: id) }
+        }
+        var users: [User] = []
+        for try await user in group { users.append(user) }
+        return users
+    }
+}
+```
+
+For throw-free groups use `withTaskGroup(of:)`.
+
+## Cancellation
+
+```swift
+func work() async throws {
+    for _ in 0..<1_000 {
+        try Task.checkCancellation()       // throws CancellationError
+        await Task.yield()                 // give the runtime a chance
+        // ...
+    }
+}
+
+// Or react to cancellation
+if Task.isCancelled { return }
+
+// Common pattern in SwiftUI — .task auto-cancels on disappear
+.task { await vm.stream() }
+```
+
+## Actors
+
+Serialize access to their stored properties; no data races on the state they
+own.
+
+```swift
+actor Inventory {
+    private var stock: [SKU: Int] = [:]
+
+    func add(_ sku: SKU, _ qty: Int) {
+        stock[sku, default: 0] += qty
+    }
+
+    func count(of sku: SKU) -> Int {
+        stock[sku] ?? 0
+    }
+}
+
+let inv = Inventory()
+await inv.add(.abc, 5)
+let n = await inv.count(of: .abc)
+```
+
+- Reading a `let` on an actor does **not** require `await`.
+- A function marked `nonisolated` inside an actor can be called synchronously
+  from anywhere but cannot touch mutable state.
+
+## MainActor
+
+Everything that touches UIKit or SwiftUI must run on the main actor.
+
+```swift
+@MainActor
+final class HomeViewModel {
+    var items: [Item] = []          // safely main-actor isolated
+
+    func load() async {
+        let fetched = await client.load()   // leaves MainActor
+        self.items = fetched                // resumes on MainActor
+    }
+}
+
+// Per-function
+@MainActor func updateUI() { ... }
+
+// Hop explicitly
+await MainActor.run {
+    label.text = "Done"
+}
+```
+
+SwiftUI `View.body` is implicitly `@MainActor` isolated.
+
+## Sendable
+
+```swift
+struct User: Sendable {          // value type, all members Sendable → auto
+    let id: UUID
+    let name: String
+}
+
+final class Config: Sendable {   // reference type — must be immutable OR
+    let baseURL: URL             //                  synchronise access yourself
+}
+
+// Closures
+Task { @Sendable in
+    await doWork()
+}
+```
+
+Under Swift 6, the compiler enforces Sendability across `async` boundaries.
+A warning today is a hard error tomorrow — fix them as you see them.
+
+## AsyncSequence
+
+```swift
+struct Countdown: AsyncSequence {
+    typealias Element = Int
+    let from: Int
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        var current: Int
+        mutating func next() async -> Int? {
+            guard current > 0 else { return nil }
+            try? await Task.sleep(for: .seconds(1))
+            defer { current -= 1 }
+            return current
+        }
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(current: from)
+    }
+}
+
+for await tick in Countdown(from: 5) {
+    print(tick)
+}
+```
+
+Apple ships a lot of built-in sequences:
+
+```swift
+for await note in NotificationCenter.default.notifications(named: .UIApplicationDidBecomeActive) { ... }
+for await line in url.lines { ... }
+for try await byte in url.resourceBytes { ... }
+```
+
+## AsyncStream / AsyncThrowingStream
+
+Bridge callback / delegate APIs into `AsyncSequence`.
+
+```swift
+func locations() -> AsyncStream<CLLocation> {
+    AsyncStream { continuation in
+        let delegate = LocationDelegate { loc in
+            continuation.yield(loc)
+        }
+        locationManager.delegate = delegate
+        continuation.onTermination = { _ in
+            locationManager.stopUpdatingLocation()
+        }
+        locationManager.startUpdatingLocation()
+    }
+}
+
+for await loc in locations() { print(loc) }
+```
+
+## Structured vs unstructured
+
+| | Structured | Unstructured |
+| --- | --- | --- |
+| Creation | `async let`, `TaskGroup` | `Task { }`, `Task.detached { }` |
+| Cancellation | Automatic — bubbles up | Manual — you keep the handle |
+| Scope | Tied to parent function | Lives until you cancel |
+
+Prefer structured concurrency when you can.
+
+## Continuations (bridging callback APIs)
+
+```swift
+func loadOldStyle(_ completion: @escaping (Result<Data, Error>) -> Void) { ... }
+
+func load() async throws -> Data {
+    try await withCheckedThrowingContinuation { c in
+        loadOldStyle { result in
+            c.resume(with: result)
+        }
+    }
+}
+```
+
+Rules: resume the continuation **exactly once**. Use
+`withCheckedContinuation` during development (logs misuse), switch to
+`withUnsafeContinuation` only if you've confirmed correctness with a profiler.
+
+## Priority
+
+```swift
+Task(priority: .userInitiated)    { await ui() }
+Task(priority: .utility)           { await batch() }
+Task(priority: .background)        { await prefetch() }
+```
+
+Priorities propagate to child tasks inside structured concurrency.
+
+## Task-local values
+
+```swift
+@TaskLocal static var requestID: UUID?
+
+Task {
+    await Self.$requestID.withValue(UUID()) {
+        await downstream()   // can read requestID
+    }
+}
+```
+
+Useful for logging and tracing without thread-local shenanigans.
+
+## Common pitfalls
+
+- **Sendable warning ignored.** The compiler eventually turns it into an
+  error. Fix once; stay fixed.
+- **Blocking the main actor.** `await someHeavyThing()` on main is fine
+  because it suspends, but a synchronous loop isn't.
+- **Spawning Tasks inside `body`.** SwiftUI re-evaluates `body` — those tasks
+  leak. Use `.task { ... }` instead.
+- **Assuming ordering.** Async work is concurrent. If order matters, enforce
+  it with `async let` + sequential awaits or by funnelling through an actor.
+- **Global mutable state.** Wrap it in an actor, mark it `@MainActor`, or
+  make it `let`. Global `var` without isolation is an error in Swift 6.
+
+## See also
+
+- [Swift cheatsheet](/docs/cheatsheets/swift)
+- [SwiftUI cheatsheet](/docs/cheatsheets/swiftui)
+- [Module 12 — Advanced & Trending](/docs/advanced-trending/overview)

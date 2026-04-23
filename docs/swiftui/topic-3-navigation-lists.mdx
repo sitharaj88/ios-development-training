@@ -1,0 +1,302 @@
+---
+id: topic-3-navigation-lists
+title: Topic 3 · Navigation & Lists
+sidebar_label: 3 · Navigation & Lists
+description: NavigationStack with typed paths, NavigationSplitView, sheets, alerts, List with sections and swipe actions, searchable, refreshable, and deep linking.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 3 · ~4 hours · navigation and scrolling screens</span>
+  <h2>Navigation is state. Lists are identity. Deep links are URLs into your model.</h2>
+  <div>
+    <code>NavigationView</code> is gone. The modern stack is <code>NavigationStack</code>
+    with a typed <code>path</code> binding, plus <code>NavigationSplitView</code>
+    for iPad and Mac. Everything — push, pop, sheet, deep link — is a state
+    mutation. Once you see routes as data, the whole navigation story gets simple.
+  </div>
+</div>
+
+## What you'll cover
+
+<StepList
+  steps={[
+    { title: 'NavigationStack + path', description: 'Typed navigation paths, navigationDestination(for:), programmatic push and pop.' },
+    { title: 'NavigationSplitView', description: 'iPad/Mac two- and three-column layouts that collapse correctly on iPhone.' },
+    { title: 'Modals', description: 'sheet, fullScreenCover, popover, alert, confirmationDialog — when to use which.' },
+    { title: 'List & ForEach', description: 'Plain/grouped/sidebar styles, sections, swipe actions, identity, refreshable.' },
+    { title: 'Search & deep linking', description: '.searchable with tokens and suggestions; turning a URL into a path append.' },
+  ]}
+/>
+
+## NavigationStack — path-based navigation
+
+A `NavigationStack` owns a stack of destinations. The path is a binding to an
+array; append to push, remove to pop. Destinations are resolved by *type*,
+not by tag or hard-coded link.
+
+```swift
+struct Product: Hashable, Identifiable { let id: UUID; let name: String }
+
+struct RootView: View {
+    @State private var path: [Product] = []
+    var body: some View {
+        NavigationStack(path: $path) {
+            ProductList(onTap: { path.append($0) })
+                .navigationDestination(for: Product.self) { product in
+                    ProductDetail(product: product)
+                }
+        }
+    }
+}
+```
+
+- `path` is the source of truth. Mutate it and the UI follows.
+- `navigationDestination(for:)` registers a resolver per type.
+- `NavigationLink(value:)` pushes by appending to `path` for you.
+
+### NavigationLink vs navigationDestination vs programmatic push
+
+<Callout kind="tip" title="Pick the right push API for the job">
+<b>NavigationLink(value:)</b> — declarative, for tappable rows. Best default.<br/>
+<b>navigationDestination(for:)</b> — resolves a type to a view. Always needed alongside <code>NavigationLink(value:)</code> or programmatic push.<br/>
+<b>Programmatic push</b> — mutate <code>path</code> from anywhere (a button handler, an incoming URL, a push notification). Use this when the navigation isn't triggered by a row tap.
+</Callout>
+
+```swift
+// Row tap — declarative
+NavigationLink(value: product) { ProductRow(product: product) }
+
+// Button — programmatic
+Button("Open checkout") { path.append(.checkout) }
+
+// Deep link — programmatic
+.onOpenURL { url in
+    if let product = product(from: url) { path.append(product) }
+}
+```
+
+## A Router pattern
+
+Once you have more than one type in the path, wrap it in an `@Observable`
+router so any view in the tree can navigate without threading bindings.
+
+```swift
+enum Route: Hashable {
+    case product(Product.ID)
+    case cart
+    case checkout
+    case orderConfirmation(Order.ID)
+}
+
+@Observable
+final class Router {
+    var path: [Route] = []
+    func push(_ route: Route) { path.append(route) }
+    func pop()                { _ = path.popLast() }
+    func popToRoot()          { path.removeAll() }
+    func replace(with route: Route) { path = [route] }
+}
+
+struct RootView: View {
+    @State private var router = Router()
+    var body: some View {
+        NavigationStack(path: $router.path) {
+            Home()
+                .navigationDestination(for: Route.self) { route in
+                    switch route {
+                    case .product(let id):        ProductDetail(id: id)
+                    case .cart:                   CartView()
+                    case .checkout:               CheckoutView()
+                    case .orderConfirmation(let id): OrderConfirmation(id: id)
+                    }
+                }
+        }
+        .environment(router)
+    }
+}
+```
+
+Any descendant reads it with `@Environment(Router.self) private var router`
+and calls `router.push(.cart)`.
+
+## Deep linking — URL in, path out
+
+Because routes are just data, deep linking is a parser plus a path append:
+
+```swift
+extension Router {
+    func handle(_ url: URL) {
+        guard url.scheme == "shop" else { return }
+        switch url.host {
+        case "product":
+            if let idString = url.pathComponents.dropFirst().first,
+               let id = UUID(uuidString: idString) {
+                path = [.product(Product.ID(id))]
+            }
+        case "checkout":
+            path = [.cart, .checkout]
+        default:
+            break
+        }
+    }
+}
+
+// App entry
+WindowGroup {
+    RootView()
+        .onOpenURL { router.handle($0) }
+}
+```
+
+Same idea for universal links (`onContinueUserActivity`) and push-notification
+payloads — they all funnel into `router.path`.
+
+## NavigationSplitView — iPad master/detail
+
+```swift
+@State private var selection: Product.ID?
+
+NavigationSplitView {
+    List(products, selection: $selection) { product in
+        NavigationLink(value: product.id) { Text(product.name) }
+    }
+} detail: {
+    if let id = selection, let product = products[id: id] {
+        ProductDetail(product: product)
+    } else {
+        ContentUnavailableView("Pick a product", systemImage: "cart")
+    }
+}
+```
+
+Three-column variant takes a middle closure (sidebar → content → detail).
+SwiftUI collapses to a stack on iPhone automatically — no conditionals needed.
+
+## Modals — sheet, fullScreenCover, popover, alert
+
+All driven by state:
+
+```swift
+@State private var showingSettings = false
+@State private var editing: Product?
+@State private var errorMessage: String?
+
+// Boolean-driven
+.sheet(isPresented: $showingSettings) { SettingsView() }
+
+// Item-driven — presents when non-nil, passes value in
+.sheet(item: $editing) { product in EditProduct(product: product) }
+
+// Alert
+.alert("Something went wrong", isPresented: .constant(errorMessage != nil), presenting: errorMessage) { _ in
+    Button("OK") { errorMessage = nil }
+} message: { msg in Text(msg) }
+
+// Confirmation dialog
+.confirmationDialog("Delete \(product.name)?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+    Button("Delete", role: .destructive) { delete(product) }
+    Button("Cancel", role: .cancel) { }
+}
+```
+
+Picking between them:
+
+- **`sheet`** — most modals. Slide-up, swipe-down dismiss, keeps context.
+- **`fullScreenCover`** — immersive flows (video, onboarding, camera). No swipe-dismiss by default.
+- **`popover`** — anchored to a source view on regular-width (iPad), becomes a sheet on compact.
+- **`alert`** — short message, 1–3 buttons. Accessibility-tuned.
+- **`confirmationDialog`** — destructive or multi-option actions. The iOS "action sheet."
+
+## List and ForEach
+
+`List` is a scrollable, adaptive container that picks up the right style for
+its context (sidebar, grouped, plain).
+
+```swift
+List {
+    Section("Favourites") {
+        ForEach(favourites) { item in
+            NavigationLink(value: item) { ItemRow(item: item) }
+                .swipeActions(edge: .trailing) {
+                    Button(role: .destructive) { remove(item) } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                }
+        }
+    }
+    Section("All") {
+        ForEach(all) { NavigationLink(value: $0) { ItemRow(item: $0) } }
+    }
+}
+.listStyle(.insetGrouped)
+```
+
+Styles: `.plain`, `.inset`, `.insetGrouped`, `.grouped`, `.sidebar`. Pick by
+context — sidebars for NavigationSplitView, insetGrouped for Settings-style
+screens, plain for feeds.
+
+### Identity matters
+
+SwiftUI diffs `ForEach` by identity. `Identifiable` is the happy path.
+Using `id: \.self` on value types is fine; using it on strings that might
+repeat is a bug magnet.
+
+```swift
+ForEach(items) { item in Row(item: item) }                    // Identifiable
+ForEach(items, id: \.id) { item in Row(item: item) }          // explicit
+ForEach(Array(items.enumerated()), id: \.offset) { ... }      // last resort
+```
+
+Force a view to reset when a specific value changes with `.id(...)`:
+
+```swift
+ProfileView().id(userID)   // new userID -> brand-new view instance
+```
+
+## .searchable, .refreshable, ScrollView
+
+Pull-to-refresh and search are one-liners:
+
+```swift
+List(results) { ResultRow(result: $0) }
+    .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search")
+    .refreshable { await viewModel.reload() }
+    .task(id: query) { await viewModel.search(query) }
+```
+
+`.searchable` also supports tokens, scopes and suggestions:
+
+```swift
+.searchable(text: $query, tokens: $tokens) { token in Label(token.name, systemImage: "tag") }
+.searchScopes($scope) {
+    Text("All").tag(Scope.all)
+    Text("Mine").tag(Scope.mine)
+}
+```
+
+For custom scroll UI that isn't a `List`, use `ScrollView` with a `LazyVStack`
+(see Topic 1). Reach for `ScrollViewReader` only when you genuinely need to
+scroll to an anchor programmatically — it fights with other mechanisms.
+
+## Key takeaways
+
+- **`NavigationStack` + typed `path` is the source of truth** for navigation.
+- **Routes are data** — put them in an `@Observable` Router and deep-link by URL parsing.
+- **`NavigationSplitView` collapses correctly on iPhone** — don't size-class branch.
+- **Modals are state-driven** — boolean or `Identifiable` item bindings.
+- **List identity drives diffing** — prefer `Identifiable` over `id: \.self`.
+
+## Practice exercises
+
+1. Build a `Router` with at least three route cases, a `NavigationStack` that
+   resolves all of them, and an `onOpenURL` handler that turns
+   `myapp://product/<uuid>` into a push.
+2. Implement a searchable product list with tokens (category filters),
+   pull-to-refresh, swipe-to-delete, and an `ContentUnavailableView` when
+   the query returns nothing.
+
+## Next
+
+Continue to **[Topic 4 · Animations & UIKit Interop](/docs/swiftui/topic-4-animations-interop)** to make it feel alive — and to bridge the SwiftUI/UIKit boundary without tears.

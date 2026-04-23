@@ -1,0 +1,246 @@
+---
+id: topic-2-push-analytics
+title: Topic 2 · Push, Storage & Analytics
+sidebar_label: 2 · Push & Analytics
+description: Cloud Storage uploads, APNs + FCM with rich notifications, Firebase Analytics events and audiences, and Crashlytics with automated dSYM upload.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 2 · Push, Storage & Analytics · ~6 hours</span>
+  <h2>Files, pushes, and the truth about user behaviour</h2>
+  <div>
+    Your users take photos, your product team wants funnels, and your on-call
+    engineer needs to know when the app crashes at 3am. This topic covers the
+    plumbing: Cloud Storage for big files, APNs/FCM for delivery, Analytics for
+    behaviour, and Crashlytics with dSYM automation for debuggable crashes.
+  </div>
+</div>
+
+## Cloud Storage — big files, signed URLs
+
+Firestore documents max out at 1 MiB. Anything larger — avatars, attachments,
+generated PDFs — goes to [Cloud Storage for Firebase](https://firebase.google.com/docs/storage),
+which is Google Cloud Storage with Firebase auth + rules on top.
+
+```swift
+import FirebaseStorage
+
+func uploadAvatar(_ data: Data, for uid: String) async throws -> URL {
+    let ref = Storage.storage().reference(withPath: "avatars/\(uid).jpg")
+    let metadata = StorageMetadata()
+    metadata.contentType = "image/jpeg"
+
+    // Async upload with progress via AsyncStream
+    let task = ref.putData(data, metadata: metadata)
+    task.observe(.progress) { snap in
+        let pct = Double(snap.progress?.completedUnitCount ?? 0)
+              / Double(snap.progress?.totalUnitCount ?? 1)
+        print("upload:", pct)
+    }
+    _ = try await task
+    return try await ref.downloadURL()
+}
+```
+
+Security rules for Storage look nearly identical to Firestore rules:
+
+```
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /avatars/{uid}.jpg {
+      allow read: if true; // public avatars
+      allow write: if request.auth.uid == uid
+                   && request.resource.size < 5 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+  }
+}
+```
+
+## APNs + Firebase Cloud Messaging
+
+<StepList
+  steps={[
+    { title: 'Enable Push Notifications capability', description: 'Signing & Capabilities → + Capability → Push Notifications. Also add Background Modes → Remote notifications if you need silent pushes.' },
+    { title: 'Create an APNs auth key (.p8)', description: 'developer.apple.com → Certificates, IDs & Profiles → Keys → +. Enable Apple Push Notifications service. Download the .p8 once — Apple will not show it again.' },
+    { title: 'Upload the .p8 to Firebase', description: 'Firebase Console → Project settings → Cloud Messaging → APNs Authentication Key. Paste the Key ID and Team ID.' },
+    { title: 'Register for remote notifications', description: 'In didFinishLaunchingWithOptions call UNUserNotificationCenter.requestAuthorization and UIApplication.shared.registerForRemoteNotifications().' },
+    { title: 'Forward the APNs token to FCM', description: 'Messaging.messaging().apnsToken = deviceToken in didRegisterForRemoteNotificationsWithDeviceToken.' },
+    { title: 'Test from the console', description: 'Send a test message to a specific FCM token or subscribe the device to a topic and broadcast.' },
+  ]}
+/>
+
+### Full registration example
+
+```swift
+import UIKit
+import UserNotifications
+import FirebaseCore
+import FirebaseMessaging
+
+@main
+final class AppDelegate: NSObject, UIApplicationDelegate,
+                         UNUserNotificationCenterDelegate, MessagingDelegate {
+
+    func application(_ app: UIApplication,
+                     didFinishLaunchingWithOptions opts: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        FirebaseApp.configure()
+        Messaging.messaging().delegate = self
+        UNUserNotificationCenter.current().delegate = self
+
+        Task {
+            let granted = try await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .badge, .sound, .provisional])
+            if granted {
+                await MainActor.run { app.registerForRemoteNotifications() }
+            }
+        }
+        return true
+    }
+
+    func application(_ app: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+        Messaging.messaging().apnsToken = token
+    }
+
+    // Foreground presentation
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent n: UNNotification) async
+    -> UNNotificationPresentationOptions {
+        return [.banner, .sound, .badge]
+    }
+
+    // User tapped the notification
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse) async {
+        let payload = response.notification.request.content.userInfo
+        DeepLinkRouter.shared.handle(payload)
+    }
+
+    // FCM token rotation
+    func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+        guard let fcmToken else { return }
+        Task { try await UserProfile.saveFCMToken(fcmToken) }
+    }
+}
+```
+
+### Rich notifications (Notification Service Extension)
+
+For image attachments, custom sounds, or decrypting end-to-end encrypted
+payloads, add a **Notification Service Extension** target. Your server sends
+`"mutable-content": 1` and the extension has ~30 seconds to mutate the
+payload before iOS renders it:
+
+```swift
+final class NotificationService: UNNotificationServiceExtension {
+    override func didReceive(_ request: UNNotificationRequest,
+                             withContentHandler handler: @escaping (UNNotificationContent) -> Void) {
+        let content = (request.content.mutableCopy() as! UNMutableNotificationContent)
+        if let urlString = content.userInfo["image"] as? String,
+           let url = URL(string: urlString) {
+            Task {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                let tmp = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".jpg")
+                try data.write(to: tmp)
+                if let attach = try? UNNotificationAttachment(identifier: "img", url: tmp) {
+                    content.attachments = [attach]
+                }
+                handler(content)
+            }
+        } else {
+            handler(content)
+        }
+    }
+}
+```
+
+### Silent / background pushes
+
+Send `"content-available": 1` with no `alert` to wake the app in the background
+for up to 30 seconds of work. Implement
+`application(_:didReceiveRemoteNotification:fetchCompletionHandler:)` and call
+the completion handler promptly — iOS will throttle apps that abuse it.
+
+## Firebase Analytics
+
+<FeatureGrid
+  features={[
+    { title: 'Auto-collected events', description: 'first_open, session_start, screen_view, in_app_purchase tracked with zero code.' },
+    { title: 'Custom events', description: 'Analytics.logEvent("cart_checkout", parameters: ["value": 42.0]). Up to 500 unique event names.' },
+    { title: 'Conversion events', description: 'Mark any event as a conversion in the console; feeds Google Ads and Looker.' },
+    { title: 'User properties', description: 'Long-lived attributes like plan_tier or onboarding_variant for audience segmentation.' },
+    { title: 'Audiences', description: 'Dynamic cohorts (e.g. "trial users who never converted") usable in Remote Config and messaging.' },
+    { title: 'DebugView', description: 'Stream events from your device in real time during development — no 24-hour delay.' },
+  ]}
+/>
+
+```swift
+import FirebaseAnalytics
+
+Analytics.logEvent("checkout_completed", parameters: [
+    AnalyticsParameterValue: order.total as NSNumber,
+    AnalyticsParameterCurrency: "USD",
+    AnalyticsParameterItems: order.items.map { ["item_id": $0.id, "quantity": $0.qty] },
+])
+Analytics.setUserProperty("pro", forName: "plan_tier")
+```
+
+<Callout kind="warning" title="Apple requires a privacy manifest for tracking APIs">
+  Since iOS 17, SDKs that access "required reason" APIs (UserDefaults, file
+  timestamps, disk space, boot time) must declare them in a `PrivacyInfo.xcprivacy`
+  bundled with your app. The Firebase SDK ships its own manifest, but your app
+  still needs one — see
+  [Apple's privacy manifest docs](https://developer.apple.com/documentation/bundleresources/privacy_manifest_files).
+  If you call `AppTrackingTransparency`, you must also request permission and
+  handle a `denied` result by disabling cross-site tracking.
+</Callout>
+
+## Crashlytics done right
+
+```swift
+import FirebaseCrashlytics
+
+Crashlytics.crashlytics().setUserID(currentUser.id)
+Crashlytics.crashlytics().setCustomValue(appBuild, forKey: "build")
+Crashlytics.crashlytics().setCustomValue(featureFlags.variant, forKey: "exp_variant")
+
+// Non-fatal reporting
+do {
+    try riskyParse()
+} catch {
+    Crashlytics.crashlytics().record(error: error)
+}
+```
+
+### dSYM upload — automate it
+
+Release builds with Bitcode disabled (the default since Xcode 14) still need
+dSYMs uploaded so stack traces are symbolicated. The Firebase SPM package ships
+a run-script you wire into your target's **Build Phases**:
+
+```bash
+"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run"
+```
+
+Add `$(SRCROOT)/$(BUILT_PRODUCTS_DIR)/$(INFOPLIST_PATH)` to the phase's input
+files so Xcode knows when to rerun it. In CI, use the
+[`upload-symbols`](https://firebase.google.com/docs/crashlytics/get-deobfuscated-reports?platform=ios)
+binary directly from a Fastlane `after_all` hook so App Store Connect builds
+never ship un-symbolicated.
+
+## Exercises
+
+1. Build an image messaging screen: upload via Cloud Storage with progress,
+   store the signed URL in Firestore, and push a rich notification (image
+   attachment) to the recipient via FCM.
+2. Instrument a checkout funnel with Analytics (`view_cart`, `begin_checkout`,
+   `purchase`), mark `purchase` as a conversion, and verify the events in
+   DebugView on a physical device.
+
+## Next
+
+Continue to **[Topic 3 · Remote Config, A/B Testing & Distribution](/docs/firebase-cloud/topic-3-remoteconfig-distribution)**.

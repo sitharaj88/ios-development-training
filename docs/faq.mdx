@@ -1,0 +1,200 @@
+---
+id: faq
+title: Frequently Asked Questions
+sidebar_label: FAQ
+slug: /faq
+description: Common questions about the iOS Development Training curriculum — prerequisites, pace, tools, platforms, and what to build next.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+## Getting started
+
+### Do I need a Mac?
+
+**Yes.** Xcode runs only on macOS. No cloud or browser-based alternative is
+fully supported for iOS development as of 2026. Apple Silicon (M1/M2/M3/M4)
+is strongly recommended — compile times and the iOS Simulator are
+dramatically faster.
+
+Used M1 MacBook Airs are widely available and more than sufficient for this
+curriculum.
+
+### Do I need a paid Apple Developer account?
+
+**Not for learning.** A free Apple ID lets you build, run on a real device
+(with a 7-day certificate), and use the simulator.
+
+You need the $99/year Apple Developer Program only to submit to TestFlight or
+the App Store — covered in **[Module 11](/docs/publishing/overview)**.
+
+### I've never written code before. Can I still follow this?
+
+You'll struggle. This curriculum assumes basic programming literacy (variables,
+loops, functions, conditionals — in any language). If you're brand-new to
+programming, work through an introductory course first, then come back.
+
+<Callout kind="tip" title="Great entry points if you're new to coding">
+Hacking with Swift's "100 Days of SwiftUI" is excellent for absolute
+beginners. Come here afterward for architecture, testing, performance, and
+shipping.
+</Callout>
+
+### I know Android / React Native / Flutter. How fast can I move?
+
+Fast. Plan to spend:
+
+- **~3 days** on Module 01 (Swift syntax).
+- **~2 days** on Module 02 (iOS platform idioms).
+- **Slowly** through Module 03 (SwiftUI) and 04 (Architecture) — the mental
+  model shift is real.
+- **Normal pace** from Module 05 onward.
+
+## Curriculum questions
+
+### Why cover UIKit if SwiftUI is the future?
+
+Because ~80% of production iOS code you'll touch in a professional job is
+still UIKit, and every large SwiftUI app eventually drops down to UIKit for
+something (custom navigation, share sheets, specialist collection views,
+camera…).
+
+Learning SwiftUI without understanding UIKit is like learning React without
+ever seeing HTML.
+
+### Should I learn MVVM or TCA?
+
+Start with **MVVM**. It's the default in the Apple ecosystem, easier to hire
+for, and fully capable for 95% of apps. We cover TCA as an alternative once
+you understand why state management gets hard.
+
+### Is there a certificate of completion?
+
+This site is a reference, not a proctored course. The "certificate" is the
+five capstone apps you ship publicly. That's what hiring managers look at.
+
+### How current is the content?
+
+Targeted at **iOS 17+ / Swift 6 / Xcode 16+** (the 2026 baseline). Concepts
+like Observation (`@Observable`), Swift Testing, SwiftData, and strict
+concurrency are first-class. Legacy material is marked as "Legacy" and kept
+for context.
+
+## Tools and setup
+
+### Which Xcode version?
+
+**The latest stable release.** Xcode drops old Swift versions faster than
+most people expect, and App Store submissions usually require the current or
+previous Xcode within a few months.
+
+### Do I need to learn Git?
+
+Yes. All modules assume you can `commit`, `branch`, `merge`, and open a PR.
+[Module 13](/docs/package-collaboration/overview) covers iOS-specific Git
+workflow (e.g. `.gitignore` for `xcuserdata`).
+
+### CocoaPods or Swift Package Manager?
+
+**SPM** for all new projects. CocoaPods is only worth learning if you join an
+existing team that uses it. See [Module 13](/docs/package-collaboration/overview).
+
+### Simulator or real device?
+
+**Both.** Simulator for fast iteration; real device for camera, sensors,
+performance reality checks, push notifications, and anything touching
+Keychain or biometrics.
+
+## Platforms
+
+### Does this cover iPad?
+
+Yes implicitly — SwiftUI is adaptive by default and almost every module
+applies equally to iPadOS. iPad-specific APIs (multitasking, PencilKit,
+Scribble) are called out where relevant.
+
+### Does this cover watchOS, tvOS, visionOS, macOS?
+
+- **watchOS** and **visionOS** are covered in Module 12.
+- **macOS** shares most of SwiftUI with iOS — you get it for ~20% extra work
+  using `#if os(macOS)`.
+- **tvOS** is mentioned briefly in Module 12 but doesn't get its own project.
+
+### I want to build for Android AND iOS. KMP? React Native?
+
+This curriculum is Swift-first and Apple-platform-first. If your goal is
+cross-platform, use this as the iOS half of your stack. Swift is worth
+knowing deeply even in a KMP or RN codebase — bridging, sharing data, and
+platform APIs all benefit.
+
+## Project questions
+
+### I can't think of an app to build. Help?
+
+Use the five capstones in order. Even if your end goal is a different app,
+finishing at least two capstones teaches the *architecture* you'll reuse.
+
+### My app works on simulator but crashes on device. What do I do?
+
+Common causes, in order of likelihood:
+
+1. A permission string is missing from `Info.plist` (camera, location, photo
+   library, contacts…).
+2. You're using a deprecated API that the simulator still resolves but the
+   device runtime doesn't.
+3. A Keychain or push entitlement is missing from the provisioning profile.
+4. Memory pressure — the simulator gives you your Mac's RAM; a real iPhone
+   is far more constrained.
+
+[Module 10](/docs/performance/overview) covers diagnosing this with
+Instruments and device-side Console logs.
+
+### How do I get my app into the App Store?
+
+End-to-end walkthrough in [Module 11](/docs/publishing/overview) — account
+setup, certificates, provisioning, archive, TestFlight, submission,
+app review.
+
+## Career questions
+
+### What salary should I expect?
+
+Varies wildly by country, seniority, and whether you're on iOS alone or
+full-stack. iOS specialists are generally paid at or above the median for
+mobile engineers, because the talent pool is smaller than Android/web.
+
+### Is iOS development a stable career in 2026 and beyond?
+
+Yes. Apple's platform expansion — Vision Pro, continued iPhone/iPad/Watch
+growth, on-device ML — keeps demand strong. The curriculum explicitly covers
+visionOS and Swift Concurrency to stay ahead of that curve.
+
+### Should I specialise in iOS or go cross-platform?
+
+Specialise first, generalise later. Engineers who know iOS deeply have a
+much higher ceiling than cross-platform generalists who know iOS
+superficially.
+
+## About this site
+
+### Is this site affiliated with Apple?
+
+No. This is an independent training resource by Sitharaj Seenivasan. Apple
+trademarks and platform names belong to Apple Inc.
+
+### Can I contribute or suggest a topic?
+
+Yes — the [repository](https://github.com/sitharaj88/ios-development-training)
+accepts issues and PRs. Corrections, clarifications, and new topics are all
+welcome.
+
+### How is the site built?
+
+[Docusaurus 3](https://docusaurus.io/), MDX content, custom components under
+`src/components/Doc/`, local full-text search via
+`@easyops-cn/docusaurus-search-local`.
+
+## Still stuck?
+
+Email **[sitharaj.info@gmail.com](mailto:sitharaj.info@gmail.com)** or open an
+issue on the [repository](https://github.com/sitharaj88/ios-development-training/issues).

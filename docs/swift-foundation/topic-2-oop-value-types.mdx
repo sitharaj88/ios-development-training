@@ -1,0 +1,396 @@
+---
+id: topic-2-oop-value-types
+title: "Topic 2 · Structs, Classes & Value Semantics"
+sidebar_label: "2 · OOP & Value Types"
+description: Structs vs classes, value vs reference semantics, properties, initializers, inheritance, ARC, and retain cycles — the core Swift mental model.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 2 · OOP & Value Types · ~2 hours</span>
+  <h2>Structs first, classes when you need identity</h2>
+  <div>
+    Swift has both value types (structs, enums) and reference types (classes).
+    Choosing correctly between them is the most consequential design decision
+    in any Swift program. This topic makes the difference concrete.
+  </div>
+</div>
+
+## What this topic covers
+
+<StepList
+  steps={[
+    { title: 'Struct vs class', description: 'Copy-on-assignment vs shared reference, with runnable examples.' },
+    { title: 'Properties', description: 'Stored, computed, lazy, willSet/didSet observers.' },
+    { title: 'Methods & initializers', description: 'mutating, static, designated, convenience, failable, required.' },
+    { title: 'Inheritance & identity', description: 'Classes only — final by default, === vs ==.' },
+    { title: 'ARC & retain cycles', description: 'strong, weak, unowned, and how to break the cycle.' },
+  ]}
+/>
+
+## The single distinction: value vs reference
+
+```swift
+struct PointS { var x: Int; var y: Int }
+class  PointC { var x = 0; var y = 0 }
+
+var a = PointS(x: 1, y: 2)
+var b = a                    // copy — independent value
+b.x = 99
+print(a.x)                   // 1
+
+let c = PointC()
+let d = c                    // same instance — shared reference
+d.x = 99
+print(c.x)                   // 99
+```
+
+A struct behaves like an `Int` — assignment copies. A class behaves like a
+pointer — assignment aliases. Every Swift idiom follows from this.
+
+<ComparisonCard
+  left={{
+    label: 'struct (value type)',
+    title: 'Independent by default',
+    variant: 'new',
+    points: [
+      'Assignment & passing copies the value',
+      'Thread-safety follows from no sharing',
+      'Equatable / Hashable easy to synthesize',
+      'Memberwise init generated for free',
+      'Cannot inherit — compose with protocols',
+    ],
+  }}
+  right={{
+    label: 'class (reference type)',
+    title: 'Shared by default',
+    variant: 'neutral',
+    points: [
+      'Heap-allocated, ARC-managed',
+      'Identity with === is meaningful',
+      'Inheritance supported',
+      'deinit runs when last reference drops',
+      'Use for services, view models, UIKit types',
+    ],
+  }}
+/>
+
+<Callout kind="tip" title="Struct first, class when you need identity">
+Default to <code>struct</code>. Switch to <code>class</code> when you need
+<strong>identity</strong> (two objects are distinct even with the same field
+values), <strong>shared mutable state</strong>, <strong>inheritance</strong>,
+or <strong>deinit</strong>. Almost everything else — models, configuration,
+SwiftUI views — is better as a struct.
+</Callout>
+
+## Properties
+
+### Stored, computed, and lazy
+
+```swift
+struct Rectangle {
+    var width: Double
+    var height: Double
+
+    // computed — recalculated each access
+    var area: Double { width * height }
+
+    // computed with getter + setter
+    var perimeter: Double {
+        get { 2 * (width + height) }
+        set { width = newValue / 4; height = newValue / 4 }
+    }
+}
+
+class Report {
+    // lazy — evaluated on first access, then stored
+    lazy var rows: [Row] = loadRows()
+    private func loadRows() -> [Row] { /* expensive */ [] }
+}
+```
+
+Rules:
+
+- Computed properties have no storage; they recompute every read.
+- `lazy` requires `var` and cannot be on a struct's `let` field.
+- Use `lazy` for expensive initialization that may not run.
+
+### Observers: `willSet` / `didSet`
+
+```swift
+class Player {
+    var score = 0 {
+        willSet { print("about to set to \(newValue)") }
+        didSet  { if score > oldValue { print("gained \(score - oldValue)") } }
+    }
+}
+```
+
+Observers run on assignment — including during `init` phases after the first
+assignment. They're handy for lightweight reactive behavior; for anything
+serious use Combine or Observation.
+
+## Methods
+
+Instance methods are straightforward. Two Swift-specific wrinkles:
+
+### `mutating` on structs
+
+```swift
+struct Counter {
+    private(set) var value = 0
+
+    mutating func increment() { value += 1 }
+}
+
+var c = Counter()
+c.increment()
+```
+
+Structs are immutable when stored in a `let`. A method that mutates state must
+be marked `mutating`; the compiler uses that to enforce that `let` counters
+stay put.
+
+### Static methods & properties
+
+```swift
+struct Temperature {
+    let celsius: Double
+    static let absoluteZero = Temperature(celsius: -273.15)
+    static func fromFahrenheit(_ f: Double) -> Temperature {
+        Temperature(celsius: (f - 32) * 5 / 9)
+    }
+}
+
+let t = Temperature.fromFahrenheit(100)
+```
+
+## Initializers
+
+### Structs get a memberwise init for free
+
+```swift
+struct User {
+    let id: UUID
+    var name: String
+    var email: String
+}
+
+let u = User(id: UUID(), name: "Ada", email: "ada@x.com")
+```
+
+### Classes need explicit inits
+
+```swift
+class Vehicle {
+    let wheels: Int
+    var speed: Double
+
+    init(wheels: Int, speed: Double = 0) {   // designated
+        self.wheels = wheels
+        self.speed  = speed
+    }
+
+    convenience init(car: Bool) {            // convenience — must call a designated init
+        self.init(wheels: car ? 4 : 2)
+    }
+}
+```
+
+### Failable initializers
+
+```swift
+struct Percent {
+    let value: Double
+    init?(_ value: Double) {
+        guard (0...100).contains(value) else { return nil }
+        self.value = value
+    }
+}
+
+let good = Percent(42)        // .some
+let bad  = Percent(150)       // .none
+```
+
+### `required`
+
+Subclasses must implement a `required` initializer. You'll see this on
+`UIView` and `UIViewController` subclasses thanks to `init(coder:)`.
+
+## Inheritance — classes only
+
+```swift
+class Animal {
+    func speak() -> String { "…" }
+}
+
+final class Dog: Animal {
+    override func speak() -> String { "Woof" }
+}
+```
+
+<Callout kind="tip" title="Default to final">
+If a class isn't explicitly designed to be subclassed, mark it
+<code>final</code>. It enables method-dispatch optimizations, prevents
+accidental subclassing, and communicates intent. Most classes in your own
+code should be <code>final</code>.
+</Callout>
+
+Prefer composition via protocols (Topic 4) over deep class hierarchies. Swift's
+standard library has almost no inheritance.
+
+## Identity vs equality
+
+```swift
+class Account { let id: Int; init(id: Int) { self.id = id } }
+
+let a = Account(id: 1)
+let b = Account(id: 1)
+let c = a
+
+a === b                       // false — different instances
+a === c                       // true  — same instance
+
+// == requires Equatable conformance — not automatic on classes
+```
+
+- `===` / `!==` — pointer identity (classes only).
+- `==` / `!=` — value equality (requires `Equatable`).
+
+For structs, synthesize `Equatable` by declaring conformance:
+
+```swift
+struct Point: Equatable { var x: Int; var y: Int }
+Point(x: 1, y: 2) == Point(x: 1, y: 2)   // true
+```
+
+## `deinit`
+
+```swift
+class File {
+    let handle: Int
+    init(handle: Int) { self.handle = handle }
+    deinit { print("closing \(handle)") }
+}
+```
+
+Runs when the last strong reference drops. Only classes have `deinit` — structs
+don't need it because they have no lifetime beyond their scope.
+
+## ARC — Automatic Reference Counting
+
+Swift tracks how many strong references point at each class instance. When the
+count hits zero, the instance is deallocated and its `deinit` runs. No garbage
+collector, no pauses.
+
+```swift
+var a: Account? = Account(id: 1)   // retain count 1
+let b = a                          // count 2
+a = nil                            // count 1
+// b goes out of scope             // count 0 → deinit runs
+```
+
+### Strong, weak, unowned
+
+- **strong** (default): keeps the referent alive.
+- **weak**: does not retain; becomes `nil` when the referent deallocates.
+  Must be `var` and optional.
+- **unowned**: does not retain; assumes the referent outlives this reference.
+  Non-optional; crashes if accessed after deallocation.
+
+## Retain cycles — the one memory bug ARC can't solve
+
+Two classes holding strong references to each other will never deallocate:
+
+```swift
+class Parent {
+    var child: Child?
+    deinit { print("Parent gone") }
+}
+class Child {
+    var parent: Parent?            // strong → cycle
+    deinit { print("Child gone") }
+}
+
+do {
+    let p = Parent()
+    let c = Child()
+    p.child = c
+    c.parent = p
+}
+// Neither deinit fires. Both are leaked.
+```
+
+Visually:
+
+```
+  Parent ──strong──▶ Child
+     ▲                 │
+     └────strong───────┘
+```
+
+### The fix: break the cycle with `weak`
+
+```swift
+class Child {
+    weak var parent: Parent?       // ← the weak edge
+    deinit { print("Child gone") }
+}
+```
+
+Both `deinit`s now fire. Rule of thumb: in a parent/child graph, the child's
+back-reference to its parent should be `weak`.
+
+### Closures capture `self` strongly
+
+```swift
+class ViewModel {
+    var onUpdate: (() -> Void)?
+
+    func bind() {
+        onUpdate = {
+            self.refresh()          // self retained by the closure → cycle
+        }
+    }
+    func refresh() {}
+}
+```
+
+Fix with a capture list:
+
+```swift
+onUpdate = { [weak self] in
+    self?.refresh()
+}
+```
+
+Use `[weak self]` when the closure may outlive `self`, `[unowned self]` only
+when you can prove it won't.
+
+## Key takeaways
+
+- **Structs are first.** Pick a class only for identity, inheritance, deinit,
+  or genuinely shared mutable state.
+- **`let` on a struct freezes it**; `mutating` methods are how structs change
+  in place.
+- **Memberwise init is free** for structs; classes require explicit inits.
+- **Mark classes `final`** unless they're designed for subclassing.
+- **Retain cycles** come from two strong references forming a loop — break
+  with `weak` or `unowned`, and always in closures that capture `self` and
+  outlive the current scope.
+
+## Practice exercises
+
+1. Model a `BankAccount` as a `struct` with a `mutating func deposit(_:)` and
+   `withdraw(_:) throws`. Add `Equatable` by account number only.
+2. Convert the above to a `class BankAccountStore` that many views can share.
+   Expose `deposit(into:amount:)` and demonstrate that mutations are visible
+   to all holders.
+3. Write a `Publisher` / `Subscriber` pair where the subscriber holds a
+   closure referencing `self`. Demonstrate the retain cycle, then fix it
+   with `[weak self]` and verify `deinit` runs.
+
+## Next
+
+Continue to **[Topic 3 · Optionals & Type Safety](/docs/swift-foundation/topic-3-optionals-safety)** — where Swift's most famous feature turns "null pointer exceptions" into compile errors.

@@ -1,0 +1,299 @@
+---
+id: topic-4-animations-interop
+title: Topic 4 · Animations & UIKit Interop
+sidebar_label: 4 · Animation & Interop
+description: Implicit and explicit SwiftUI animations, transitions, matchedGeometryEffect, Canvas, TimelineView, and bridging UIKit with UIViewRepresentable and UIHostingController.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 4 · ~4 hours · animation, drawing, UIKit bridging</span>
+  <h2>Animate values, not properties — and bridge to UIKit when that's the cleanest answer</h2>
+  <div>
+    SwiftUI animations are declarative: you describe the end state, and the
+    framework interpolates. UIKit interop is equally declarative from the SwiftUI
+    side — wrap a UIView or UIViewController, then keep its state in sync with
+    <code>updateUIView</code>. Both topics share the same mindset: <em>the
+    view tree describes truth; frameworks handle the how</em>.
+  </div>
+</div>
+
+## What you'll cover
+
+<StepList
+  steps={[
+    { title: 'Implicit vs explicit animation', description: '.animation(_:value:) vs withAnimation { } — when each is correct.' },
+    { title: 'Transitions', description: '.transition(.move), .asymmetric, custom transitions for inserts and removes.' },
+    { title: 'matchedGeometryEffect', description: 'Hero animations with @Namespace and shared identity across views.' },
+    { title: 'Canvas & TimelineView', description: 'High-performance drawing and time-driven animations.' },
+    { title: 'UIKit interop', description: 'UIViewRepresentable, UIViewControllerRepresentable, UIHostingController, Coordinator pattern.' },
+  ]}
+/>
+
+## Implicit animations — `.animation(_:value:)`
+
+Attach an animation to a specific state value. SwiftUI animates any view
+property that depends on that value when it changes.
+
+```swift
+@State private var expanded = false
+
+VStack {
+    Image(systemName: "chevron.right")
+        .rotationEffect(.degrees(expanded ? 90 : 0))
+    if expanded { DetailPanel() }
+}
+.animation(.spring(duration: 0.3), value: expanded)
+```
+
+Prefer the value-scoped form `.animation(_:value:)` over the old
+`.animation(_:)` — it scopes the animation to a specific trigger and avoids
+accidental animations of unrelated state.
+
+## Explicit animations — `withAnimation { }`
+
+Use when the animation is imperative — driven by a button tap, a gesture end,
+or an async completion.
+
+```swift
+Button("Toggle") {
+    withAnimation(.spring) {
+        expanded.toggle()
+    }
+}
+```
+
+Every state mutation *inside* the closure is animated; changes outside are not.
+Use `.animation(nil, value:)` on a subview to opt *out* of an ancestor's
+animation envelope.
+
+## Transitions
+
+Transitions describe how a view animates *in and out of existence* — i.e.
+when it's added to or removed from a parent by an `if`, `switch`, or
+`ForEach`.
+
+```swift
+if showingBanner {
+    Banner()
+        .transition(.move(edge: .top).combined(with: .opacity))
+}
+```
+
+Asymmetric transitions use different animations for insert and remove:
+
+```swift
+.transition(.asymmetric(
+    insertion: .scale.combined(with: .opacity),
+    removal: .opacity
+))
+```
+
+The transition only runs inside a `withAnimation` block (or under an
+`.animation(_:value:)` scope).
+
+## matchedGeometryEffect — hero animations
+
+Two views sharing an `id` in a `@Namespace` will animate between each other's
+frames when one disappears and the other appears.
+
+```swift
+@Namespace private var ns
+@State private var expanded = false
+
+if expanded {
+    BigPhoto(photo: photo)
+        .matchedGeometryEffect(id: photo.id, in: ns)
+} else {
+    Thumb(photo: photo)
+        .matchedGeometryEffect(id: photo.id, in: ns)
+}
+```
+
+Wrap the toggle in `withAnimation` and SwiftUI interpolates position, size,
+and opacity. This is how the Photos app's tap-to-expand works — conceptually,
+at least.
+
+## AnimatableData (teaser)
+
+Any view can participate in animation by conforming to `Animatable` and
+exposing an `animatableData` property. SwiftUI interpolates that property
+between from/to values and calls `body` at each frame.
+
+```swift
+struct PieSlice: Shape, Animatable {
+    var fraction: CGFloat
+    var animatableData: CGFloat {
+        get { fraction }
+        set { fraction = newValue }
+    }
+    func path(in rect: CGRect) -> Path { /* ... draw arc ... */ Path() }
+}
+```
+
+We cover full `Animatable` + `AnimatablePair` usage in the advanced module.
+
+## Canvas & TimelineView
+
+`Canvas` is an immediate-mode draw API backed by CoreGraphics/Metal. Use it
+for custom visualisations — graphs, gauges, particle effects — where
+composing SwiftUI views would be too heavy.
+
+```swift
+Canvas { context, size in
+    for point in dataPoints {
+        let rect = CGRect(x: point.x, y: point.y, width: 4, height: 4)
+        context.fill(Path(ellipseIn: rect), with: .color(.accentColor))
+    }
+}
+.frame(height: 200)
+```
+
+Combine with `TimelineView` for time-driven animations that don't depend on
+state mutations:
+
+```swift
+TimelineView(.animation) { timeline in
+    Canvas { ctx, size in
+        let t = timeline.date.timeIntervalSinceReferenceDate
+        let angle = Angle.radians(t.remainder(dividingBy: 2 * .pi))
+        // ...draw rotating shape...
+    }
+}
+```
+
+<Callout kind="warning" title="Don't over-animate">
+Every extra animation is a cognitive tax on the user and a battery cost on
+the device. Animate <em>transitions between meaningful states</em>, not
+decorations. If a user can't tell you what changed, you animated the wrong
+thing. The 2017 WWDC rule still holds: motion should clarify, not entertain.
+</Callout>
+
+## UIKit interop — UIViewRepresentable
+
+When SwiftUI doesn't have the view you need (MapKit before iOS 17's Map API,
+PHPicker, advanced WKWebView config, vendor SDKs), wrap it.
+
+```swift
+import SwiftUI
+import MapKit
+
+struct MapSnapshot: UIViewRepresentable {
+    let region: MKCoordinateRegion
+    let annotations: [MKPointAnnotation]
+
+    func makeUIView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        return map
+    }
+
+    func updateUIView(_ map: MKMapView, context: Context) {
+        map.setRegion(region, animated: true)
+        map.removeAnnotations(map.annotations)
+        map.addAnnotations(annotations)
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            // forward to SwiftUI via a @Binding or closure
+        }
+    }
+}
+```
+
+Rules of the bridge:
+
+- `makeUIView` runs **once**. Create the view, set delegates, register cells.
+- `updateUIView` runs on every SwiftUI re-render. Reflect the current SwiftUI
+  state into the UIKit view — it's idempotent, not "apply a diff."
+- `Coordinator` holds delegate/target-action code. Communicate back to SwiftUI
+  by calling closures captured from the representable or mutating a `@Binding`.
+
+## UIViewControllerRepresentable
+
+Same shape, but for a full controller. Example — Photos picker:
+
+```swift
+import SwiftUI
+import PhotosUI
+
+struct PhotoPicker: UIViewControllerRepresentable {
+    @Binding var selection: [PHPickerResult]
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.selectionLimit = 5
+        config.filter = .images
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller: PHPickerViewController, context: Context) { }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let parent: PhotoPicker
+        init(_ parent: PhotoPicker) { self.parent = parent }
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            parent.selection = results
+        }
+    }
+}
+```
+
+Use with `.sheet(isPresented:)` and bind `selection` to a parent `@State`.
+
+## The other direction — UIHostingController
+
+When you're in a UIKit app and want to embed SwiftUI:
+
+```swift
+let swiftUIView = SettingsScreen().environment(session)
+let host = UIHostingController(rootView: swiftUIView)
+navigationController?.pushViewController(host, animated: true)
+```
+
+This is the migration strategy for legacy apps: new screens are SwiftUI,
+pushed into the existing `UINavigationController`. The two frameworks happily
+coexist in the same navigation stack.
+
+Share data with `@Observable` models passed through `.environment(...)` or
+plain initialiser injection — both sides can hold a reference to the same
+object.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Lottie iOS', tagline: 'After Effects animations', description: 'Render designer-authored JSON animations natively. SwiftUI wrappers make drop-in usage trivial.', url: 'https://github.com/airbnb/lottie-ios' },
+  { name: 'Pow', tagline: 'Drop-in transitions', description: 'A library of beautiful, physically-plausible SwiftUI transitions and effects from Moving Parts.', url: 'https://movingparts.io/pow', recommended: true },
+  { name: 'Rive', tagline: 'Interactive state-machine animations', description: 'Designer-driven animations with state machines that react to app state. First-class iOS runtime.', url: 'https://rive.app' },
+  { name: 'SwiftUINavigation', tagline: 'Point-Free navigation tools', description: 'Sharper bindings for optional/enum state, making modals and routes easier to model.', url: 'https://github.com/pointfreeco/swift-navigation' },
+]} />
+
+## Key takeaways
+
+- **Animate state changes, not properties** — `withAnimation` and `.animation(_:value:)`.
+- **Transitions are for view appearance/disappearance**; combine them with `.asymmetric` when in/out should differ.
+- **`matchedGeometryEffect`** is the SwiftUI way to do hero animations — free position + size + opacity interpolation.
+- **`Canvas` + `TimelineView`** cover custom drawing and time-based animations without leaving SwiftUI.
+- **`UIViewRepresentable` and `UIHostingController` are first-class** — interop is a feature, not a fallback.
+
+## Practice exercises
+
+1. Build a like-button "burst": tapping toggles a filled heart, which scales
+   up + fades out with a particle ring, using `withAnimation(.spring)` and
+   `.transition`. Bonus: reuse `matchedGeometryEffect` to animate the heart
+   to a different anchor.
+2. Wrap `MKMapView` in a `UIViewRepresentable` with a `@Binding` for the
+   region and a closure for annotation taps. Demonstrate two-way sync: the
+   map can update SwiftUI state when the user pans, and SwiftUI can reset the
+   region from a button.
+
+## Next module
+
+Continue to **[Module 04 · Architecture & Design Patterns](/docs/architecture-patterns/overview)** to organise these views, models, and routers into something a team can maintain for years.

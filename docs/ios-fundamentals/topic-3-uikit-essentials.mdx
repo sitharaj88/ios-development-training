@@ -1,0 +1,281 @@
+---
+id: topic-3-uikit-essentials
+title: "Topic 3 · UIKit Essentials"
+sidebar_label: "3 · UIKit Essentials"
+description: UIViewController lifecycle, UIView coordinate systems, IBOutlets, target-action, responder chain, delegation, and why SwiftUI still leans on UIKit.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 02 · Topic 3 · ~3 hours</span>
+  <h2>The patterns every iOS engineer must know</h2>
+  <div>
+    SwiftUI did not replace UIKit — it wraps it. When you push a SwiftUI
+    view, something is holding a <code>UIHostingController</code>. When you
+    tap a button, the responder chain routes the event. Learn the mechanics
+    once and every framework above them makes sense.
+  </div>
+</div>
+
+## Why this is still day-one material
+
+- Most enterprise apps you will join have majority-UIKit screens.
+- The AppKit/UIKit interop story (UIViewRepresentable,
+  UIHostingController) requires you to understand the lifecycle on both
+  sides.
+- Debugging a misbehaving SwiftUI screen often means inspecting the hosting
+  controller and the responder chain.
+- The concepts — lifecycle hooks, delegation, responder chain — are the
+  vocabulary Apple's own documentation uses everywhere.
+
+## What we'll cover
+
+<StepList
+  steps={[
+    { title: 'UIViewController lifecycle', description: 'init → loadView → viewDidLoad → viewWillAppear → viewDidAppear → viewWillDisappear → viewDidDisappear → deinit.' },
+    { title: 'UIView fundamentals', description: 'Frame vs bounds, coordinate system, hit testing, layer-backed drawing.' },
+    { title: 'IBOutlets, IBActions & target-action', description: 'How buttons and controls call back into your code — with or without Interface Builder.' },
+    { title: 'The responder chain', description: 'First responder, next responder, how events find their handler.' },
+    { title: 'Gesture recognizers', description: 'Tap, pan, pinch — and how they interact with scroll views.' },
+    { title: 'Delegation', description: 'Protocol-based extension points: UITableViewDelegate, URLSessionDelegate, and your own.' },
+    { title: 'UIKit ↔ SwiftUI interop', description: 'Why all of the above still matters inside SwiftUI code.' },
+  ]}
+/>
+
+## The UIViewController lifecycle
+
+Each hook has a specific job. Putting code in the wrong one is the most
+common UIKit bug.
+
+<StepList
+  steps={[
+    { title: 'init(coder:) or init(nibName:bundle:)', description: 'The instance exists. Outlets are NOT connected yet. Use only for dependency injection.' },
+    { title: 'loadView()', description: 'The system builds self.view. Override only if you create the view hierarchy entirely in code and want to skip the default UIView.' },
+    { title: 'viewDidLoad()', description: 'Outlets are connected. The view is in memory but not yet on screen. One-time setup: register cells, configure subviews, attach observers.' },
+    { title: 'viewWillAppear(_:)', description: 'About to appear — may fire multiple times (push, pop back, modal dismiss). Refresh data, update nav bar, restart timers.' },
+    { title: 'viewIsAppearing(_:)', description: 'iOS 17+. Fires after trait/size resolution, before the appearance transition — best place to read view sizes.' },
+    { title: 'viewDidAppear(_:)', description: 'Fully visible. Start animations, analytics screen events, request focus.' },
+    { title: 'viewWillDisappear(_:) / viewDidDisappear(_:)', description: 'Pair with their appear counterparts. Tear down timers, save state, end editing.' },
+    { title: 'deinit', description: 'Controller is being deallocated. Remove observers that used self if you did not use the block-based API.' },
+  ]}
+/>
+
+```swift
+final class ProductListVC: UIViewController {
+    private let repository: ProductRepository
+    private var refreshTimer: Timer?
+
+    init(repository: ProductRepository) {
+        self.repository = repository
+        super.init(nibName: nil, bundle: nil)
+    }
+    required init?(coder: NSCoder) { fatalError("use init(repository:)") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Products"
+        configureCollectionView()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        Task { await reload() }
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { await self?.reload() }
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+    }
+}
+```
+
+<Callout kind="warning" title="Beware the massive view controller">
+The oldest iOS antipattern: a view controller that owns networking, parsing,
+persistence, analytics, and layout. The fix is not "smaller view controllers"
+— it's <em>different objects</em>: a view model for state, a repository for
+data, a router for navigation. Keep the VC to coordinating lifecycle and
+binding outputs to views. MVVM, VIPER, and The Composable Architecture all
+exist to solve this.
+</Callout>
+
+## UIView — frame vs bounds
+
+Every view has two rectangles, and confusing them is how you spend an hour
+debugging a layout that looks right in Interface Builder and wrong on device.
+
+- **`frame`** — the view's rectangle in its **superview's** coordinate space.
+  Changing `frame` moves or resizes the view.
+- **`bounds`** — the view's rectangle in its **own** coordinate space. The
+  origin is almost always `(0, 0)`; changing the origin scrolls the view's
+  contents (this is how `UIScrollView` works).
+- **Coordinate system** — origin top-left, y increases downward, units are
+  points (not pixels). `UIScreen.main.scale` gives you the point-to-pixel
+  ratio.
+
+```swift
+// Convert between coordinate spaces when you work across view hierarchies.
+let pointInButton = button.convert(point, from: view)
+let frameOnScreen = view.convert(view.bounds, to: nil)   // nil = window
+```
+
+Hit testing walks the view tree via `hitTest(_:with:)` + `point(inside:with:)`.
+The deepest view whose `point(inside:...)` returns true wins the event. Set
+`isUserInteractionEnabled = false` or override `hitTest` to customize.
+
+## IBOutlets, IBActions & target-action
+
+Even in code-only projects, **target-action** is how UIKit controls invoke
+your methods. It's a runtime mechanism: the control holds a `(target, Selector)`
+pair and sends a message for a given `UIControl.Event`.
+
+```swift
+// Code-only version — no Interface Builder required.
+let button = UIButton(type: .system)
+button.setTitle("Checkout", for: .normal)
+button.addTarget(self, action: #selector(didTapCheckout), for: .touchUpInside)
+
+@objc private func didTapCheckout() {
+    Task { await checkout() }
+}
+
+// Modern closure-based alternative (iOS 14+):
+button.addAction(UIAction { [weak self] _ in
+    Task { await self?.checkout() }
+}, for: .touchUpInside)
+```
+
+`@IBOutlet weak var label: UILabel!` is a property connected in Interface
+Builder. `weak` is correct — the view hierarchy retains the label. The
+implicit unwrap is pragmatic: after `viewDidLoad`, the outlet is never nil.
+
+## The responder chain
+
+Every `UIResponder` — `UIView`, `UIViewController`, `UIApplication` —
+participates in a chain. When an event is not handled by the first
+responder, UIKit walks up the chain looking for a method signature match:
+view → superview → view controller → parent VC → window → application →
+app delegate.
+
+```swift
+// Send an action up the chain without knowing who handles it.
+UIApplication.shared.sendAction(#selector(UIResponder.copy(_:)),
+                                to: nil, from: self, for: nil)
+```
+
+This is how the shake-to-undo gesture, keyboard shortcuts, and menu bar
+items reach handlers without being wired to a specific object. `becomeFirstResponder()`
+and `resignFirstResponder()` control keyboard focus.
+
+## Gesture recognizers
+
+A `UIGestureRecognizer` lives on a view and converts raw touches into
+semantic events. Add one per gesture, configure with target-action or a
+closure wrapper.
+
+```swift
+let tap  = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+let pan  = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
+let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch))
+
+view.addGestureRecognizer(tap)
+view.addGestureRecognizer(pan)
+view.addGestureRecognizer(pinch)
+
+tap.require(toFail: pan)   // disambiguate overlapping gestures
+```
+
+Recognizers have a `state` machine (`.possible → .began → .changed → .ended`
+or `.cancelled/.failed`). Read the state in your handler; don't just treat
+`.ended` as the whole story for continuous gestures.
+
+## Delegation — the protocol-based extension point
+
+Delegation is UIKit's standard customization pattern: an object exposes a
+protocol, you conform, you get called back. `UITableViewDelegate`,
+`UIScrollViewDelegate`, `UICollectionViewDelegate`, `URLSessionDelegate`,
+`CLLocationManagerDelegate` — the list is long.
+
+<ComparisonCard
+  left={{
+    label: 'Delegation',
+    title: 'Protocol + weak reference',
+    variant: 'neutral',
+    points: [
+      'Multiple callbacks grouped in one protocol',
+      'Optional methods via @objc optional or protocol extensions',
+      'Delegate is typically weak — no retain cycles',
+      'Discoverable: Jump-to-definition reveals the full surface',
+      'Idiomatic in older UIKit APIs',
+    ],
+  }}
+  right={{
+    label: 'Closures',
+    title: 'One-off callbacks',
+    variant: 'neutral',
+    points: [
+      'Lightest syntax for a single callback',
+      'Capture context inline — great for small handlers',
+      'Retain cycles require [weak self] discipline',
+      'Harder to discover when a type has many',
+      'Idiomatic in modern / Swift-first APIs',
+    ],
+  }}
+/>
+
+```swift
+// Your own delegate — use AnyObject so it can be weak.
+protocol CheckoutViewDelegate: AnyObject {
+    func checkoutView(_ view: CheckoutView, didConfirm order: Order)
+    func checkoutViewDidCancel(_ view: CheckoutView)
+}
+
+final class CheckoutView: UIView {
+    weak var delegate: CheckoutViewDelegate?
+}
+```
+
+## Why SwiftUI still needs all of this
+
+- **`UIViewRepresentable`** and **`UIViewControllerRepresentable`** are how
+  you embed UIKit in SwiftUI. Their `Coordinator` is a delegate holder.
+- **`UIHostingController`** is how SwiftUI views are embedded in UIKit nav
+  stacks. Its `viewDidLoad`/`viewWillAppear` still drive `onAppear`/`task`.
+- **`.introspect`** libraries read the underlying `UIKit` view to tweak
+  behaviour SwiftUI doesn't expose.
+- **Gesture recognizers** show up when SwiftUI's `DragGesture` doesn't
+  compose the way you need.
+
+Treat this topic as the bedrock. Every later module — SwiftUI, navigation,
+networking — will reference it.
+
+<LibraryGrid libraries={[
+  { name: 'UIViewController', tagline: 'Apple · lifecycle reference', description: 'Every callback, in order, with the rules about when they fire.', url: 'https://developer.apple.com/documentation/uikit/uiviewcontroller', recommended: true },
+  { name: 'Event Delivery: The Responder Chain', tagline: 'Apple · events', description: 'How touches, presses, and remote events find a handler.', url: 'https://developer.apple.com/documentation/uikit/touches_presses_and_gestures/using_responders_and_the_responder_chain_to_handle_events' },
+  { name: 'UIGestureRecognizer', tagline: 'Apple · gestures', description: 'The state machine, dependency order, and simultaneous recognition rules.', url: 'https://developer.apple.com/documentation/uikit/uigesturerecognizer' },
+]} />
+
+## Exercises
+
+1. Build a `UIViewController` subclass that logs every lifecycle hook
+   (`viewDidLoad`, `viewWillAppear`, `viewIsAppearing`, `viewDidAppear`,
+   `viewWillDisappear`, `viewDidDisappear`, `deinit`). Push it, pop it,
+   present it modally, dismiss it — confirm the order matches the table above.
+2. Build a `CheckoutView` with a `CheckoutViewDelegate` protocol, two methods,
+   and a weak delegate. Wire it to a host VC. Then add a second version of
+   the same view that uses closures instead. Compare call-site readability
+   and retain-cycle risk.
+
+## Next
+
+Continue to **[Topic 4 · Layout & Navigation](/docs/ios-fundamentals/topic-4-layout-navigation)** —
+Auto Layout, stack views, safe areas, navigation controllers, tab bars, and
+modern `UICollectionView`.

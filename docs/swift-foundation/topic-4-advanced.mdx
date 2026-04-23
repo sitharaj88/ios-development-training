@@ -1,0 +1,362 @@
+---
+id: topic-4-advanced
+title: "Topic 4 · Generics, Protocols, Async"
+sidebar_label: "4 · Advanced"
+description: Generics, protocols, property wrappers, extensions, and a first taste of async/await — the abstractions that power idiomatic Swift.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 4 · Generics, Protocols, Async · ~2 hours</span>
+  <h2>The tools that make Swift code reusable without inheritance</h2>
+  <div>
+    Generics, protocols, and extensions are how idiomatic Swift abstracts.
+    Property wrappers let you encode behavior in types. Async/await is the
+    new default for I/O. This topic introduces all of them — deep dives on
+    concurrency wait for Module 12.
+  </div>
+</div>
+
+## What this topic covers
+
+<StepList
+  steps={[
+    { title: 'Generics', description: 'Generic functions, generic types, where clauses, constrained associated types.' },
+    { title: 'Protocols', description: 'Requirements, default implementations, composition, existentials vs generics.' },
+    { title: 'Property wrappers', description: 'Behavior packaged as a type — with a worked Clamped example.' },
+    { title: 'Extensions', description: 'Adding methods to types you don\'t own; conditional conformance.' },
+    { title: 'Async/await', description: 'Enough to call async APIs; the runtime model is Module 12.' },
+  ]}
+/>
+
+## Generics
+
+Generics let you write code once against an unknown type and have the compiler
+specialize it per call site. Type-safe, zero-cost abstraction.
+
+### Generic functions
+
+```swift
+func swapValues<T>(_ a: inout T, _ b: inout T) {
+    let tmp = a; a = b; b = tmp
+}
+
+var x = 1, y = 2
+swapValues(&x, &y)
+
+var s1 = "a", s2 = "b"
+swapValues(&s1, &s2)
+```
+
+### Generic types
+
+```swift
+struct Stack<Element> {
+    private var items: [Element] = []
+    mutating func push(_ x: Element) { items.append(x) }
+    mutating func pop() -> Element?  { items.popLast() }
+    var top: Element? { items.last }
+}
+
+var ints = Stack<Int>()
+ints.push(1); ints.push(2)
+```
+
+### Constraints and `where` clauses
+
+Restrict the unknown type to something useful:
+
+```swift
+func biggest<T: Comparable>(_ xs: [T]) -> T? {
+    xs.max()
+}
+
+extension Array where Element: Numeric {
+    func total() -> Element { reduce(0, +) }
+}
+
+[1, 2, 3].total()            // 6
+```
+
+### Constrained associated types
+
+```swift
+protocol Repository {
+    associatedtype Entity: Identifiable
+    func find(_ id: Entity.ID) async throws -> Entity?
+    func save(_ entity: Entity) async throws
+}
+```
+
+`associatedtype` is a placeholder inside a protocol — concrete conformers pick
+the actual type.
+
+## Protocols
+
+A protocol declares requirements. Any type — class, struct, or enum — can
+conform.
+
+```swift
+protocol Drawable {
+    var bounds: CGRect { get }
+    func draw(in ctx: CGContext)
+}
+
+struct Circle: Drawable {
+    let bounds: CGRect
+    func draw(in ctx: CGContext) { ctx.strokeEllipse(in: bounds) }
+}
+```
+
+### Default implementations via extensions
+
+Swift's secret weapon. Provide behavior once, for anything that conforms.
+
+```swift
+protocol Greetable { var name: String { get } }
+
+extension Greetable {
+    func greet() -> String { "Hello, \(name)!" }
+}
+
+struct Person: Greetable { let name: String }
+Person(name: "Ada").greet()   // "Hello, Ada!"
+```
+
+This replaces most of what other languages do with abstract base classes — no
+inheritance, no diamond problem, opt-in per conformance.
+
+### Protocol composition
+
+Require multiple protocols in one parameter:
+
+```swift
+func log<T: CustomStringConvertible & Identifiable>(_ value: T) {
+    print("[\(value.id)] \(value.description)")
+}
+```
+
+### `some` vs `any` — the one-sentence rule
+
+<Callout kind="info" title="some vs any in one sentence">
+Use <code>some P</code> when the type is fixed at compile time and the
+compiler can monomorphize; use <code>any P</code> only when you need a
+heterogeneous container or must store the protocol as a value at runtime.
+</Callout>
+
+```swift
+// some — opaque, single concrete type, zero overhead
+func makeView() -> some View { Text("hi") }
+
+// any — existential, can be different types at runtime, has overhead
+var handlers: [any Drawable] = [Circle(...), Square(...)]
+```
+
+Default to `some`. Reach for `any` only when you genuinely need runtime
+heterogeneity.
+
+### Existentials vs generics
+
+These two signatures look similar but behave differently:
+
+```swift
+func render(_ d: any Drawable) { /* boxed existential */ }
+func render<D: Drawable>(_ d: D) { /* specialized per call site */ }
+```
+
+The generic form is faster and usually nicer to read; the existential form is
+necessary when you need to store values of different conforming types in the
+same collection.
+
+<ComparisonCard
+  left={{
+    label: 'Classical inheritance',
+    title: 'Abstract base class hierarchy',
+    variant: 'old',
+    points: [
+      'Single inheritance — one parent only',
+      'Forces is-a relationships, even where none exist',
+      'Hard to add behavior to types you don\'t own',
+      'Tight coupling to base-class internals',
+    ],
+  }}
+  right={{
+    label: 'Protocol composition',
+    title: 'Small protocols, combined at the use site',
+    variant: 'new',
+    points: [
+      'Conform to many protocols, opt in per type',
+      'Default impls via extensions — no base class',
+      'Works for structs and enums, not just classes',
+      'Tests stub by conforming, not subclassing',
+    ],
+  }}
+/>
+
+## Extensions
+
+Add methods, computed properties, initializers, or protocol conformance to any
+type — including types you don't own.
+
+```swift
+extension String {
+    var isBlank: Bool { trimmingCharacters(in: .whitespaces).isEmpty }
+}
+
+extension Int {
+    func times(_ body: () -> Void) { for _ in 0..<self { body() } }
+}
+
+3.times { print("hi") }
+```
+
+### Conditional conformance
+
+Conform a generic type to a protocol only when its parameters do:
+
+```swift
+extension Array: Equatable where Element: Equatable {}
+// [Int] is Equatable; [(Int) -> Int] is not.
+```
+
+The standard library uses this heavily — it's why `[Int]` just works with `==`
+but `[() -> Void]` doesn't.
+
+## Property wrappers
+
+A property wrapper factors a property's behavior into a reusable type. SwiftUI
+exposes most of its state model this way — `@State`, `@Binding`,
+`@Environment`, `@Observable`.
+
+### Worked example: `@Clamped`
+
+```swift
+@propertyWrapper
+struct Clamped<Value: Comparable> {
+    private var value: Value
+    let range: ClosedRange<Value>
+
+    init(wrappedValue: Value, _ range: ClosedRange<Value>) {
+        self.range = range
+        self.value = min(max(wrappedValue, range.lowerBound), range.upperBound)
+    }
+
+    var wrappedValue: Value {
+        get { value }
+        set { value = min(max(newValue, range.lowerBound), range.upperBound) }
+    }
+}
+
+struct Volume {
+    @Clamped(0...100) var level: Int = 50
+}
+
+var v = Volume()
+v.level = 200
+print(v.level)                // 100
+v.level = -5
+print(v.level)                // 0
+```
+
+The wrapper owns the storage and intercepts reads/writes. You gain a reusable
+constraint without repeating validation in every setter.
+
+## Async / await — the new normal
+
+Swift Concurrency is the default way to write I/O-bound code. We introduce
+just enough here — Module 12 covers actors, `AsyncSequence`, `TaskGroup`,
+cancellation, and the runtime.
+
+### Marking a function `async`
+
+```swift
+func fetchUser(id: UUID) async throws -> User {
+    let url = URL(string: "https://api.example.com/users/\(id)")!
+    let (data, _) = try await URLSession.shared.data(from: url)
+    return try JSONDecoder().decode(User.self, from: data)
+}
+```
+
+`async` marks a function as suspension-capable; `await` is a call site that
+may suspend. `throws` composes normally — `try await` is the canonical form.
+
+### Kicking off async work from sync code: `Task`
+
+```swift
+func viewDidAppear() {
+    Task {
+        do {
+            let user = try await fetchUser(id: id)
+            updateUI(user)
+        } catch {
+            showError(error)
+        }
+    }
+}
+```
+
+`Task { }` creates an unstructured task that runs the closure concurrently. In
+SwiftUI, prefer `.task { }` — it ties the task's lifetime to the view.
+
+### Calling multiple async operations
+
+Sequentially (one awaits the other):
+
+```swift
+let user = try await fetchUser(id: id)
+let posts = try await fetchPosts(for: user.id)
+```
+
+Concurrently (both run in parallel):
+
+```swift
+async let user  = fetchUser(id: id)
+async let stats = fetchStats(id: id)
+let (u, s) = try await (user, stats)
+```
+
+`async let` fires the call immediately and lets you `await` the result later.
+
+<Callout kind="tip" title="When you see a completion handler, there's probably an async version">
+Since iOS 15, most Apple APIs ship both a callback and an async variant.
+Reach for <code>await</code> first — linear code, real error handling,
+cancellation for free.
+</Callout>
+
+## Recommended references
+
+<LibraryGrid libraries={[
+  { name: 'The Swift Programming Language', tagline: 'Apple\'s official book', description: 'The definitive language reference. Read the Generics, Protocols, and Concurrency chapters in full.', url: 'https://docs.swift.org/swift-book/', recommended: true },
+  { name: 'Swift Evolution', tagline: 'Language proposals', description: 'Every accepted proposal is a window into *why* a feature exists. Read SE-0335 (existentials) and SE-0296 (async/await).', url: 'https://github.com/apple/swift-evolution' },
+  { name: 'Hacking with Swift', tagline: 'Paul Hudson tutorials', description: 'Clear, pragmatic explanations of generics, protocols, and async/await, with runnable examples.', url: 'https://www.hackingwithswift.com' },
+  { name: 'Point-Free', tagline: 'Advanced Swift videos', description: 'Deep, opinionated takes on protocol design, generics, and architecture. Paid, and worth it.', url: 'https://www.pointfree.co' },
+]} />
+
+## Key takeaways
+
+- **Generics specialize per call site** — zero-cost abstraction with full
+  type safety.
+- **Protocols + extensions replace inheritance** for most abstraction needs.
+- **`some` by default, `any` when you need runtime heterogeneity.**
+- **Property wrappers** package reusable storage behavior as a type.
+- **`async`/`await` is the new normal** — Task for kickoff, `async let` for
+  parallelism, `try await` for throwing async calls.
+
+## Practice exercises
+
+1. Write a generic `struct Cache<Key: Hashable, Value>` with `get`, `set`,
+   and `remove`. Add a `where Value: Codable` extension that persists the
+   cache to `Data`.
+2. Define `protocol Animal { var name: String { get }; func sound() -> String }`
+   with a default `description` via extension that combines both. Conform two
+   structs and print them.
+3. Rewrite this callback-based function as `async throws`:
+   ```swift
+   func loadImage(url: URL, done: @escaping (Result<Data, Error>) -> Void)
+   ```
+   Then call it from a `Task` and handle errors with `do/catch`.
+
+## Next module
+
+Continue to **[Module 02 · iOS Fundamentals & UIKit](/docs/ios-fundamentals/overview)** — where you'll apply everything from this module to your first real iOS app.

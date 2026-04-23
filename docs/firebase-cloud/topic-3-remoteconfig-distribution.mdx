@@ -1,0 +1,200 @@
+---
+id: topic-3-remoteconfig-distribution
+title: Topic 3 · Remote Config, A/B Testing & Distribution
+sidebar_label: 3 · Config & Distribution
+description: Feature flags with Firebase Remote Config, A/B experiments, App Distribution vs TestFlight, native alternatives, and a clean exit plan.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 3 · Config, experiments & distribution · ~5 hours</span>
+  <h2>Ship faster, measure everything, keep an exit door</h2>
+  <div>
+    Feature flags let you decouple deploy from release. A/B testing turns
+    opinions into numbers. And tester distribution closes the loop before a
+    build goes public. This topic also tells you when to outgrow Firebase —
+    because every managed backend eventually pinches somewhere.
+  </div>
+</div>
+
+## Firebase Remote Config
+
+Remote Config is a server-side key/value store your app fetches at launch and
+on demand. Think of it as feature flags + JSON-shaped config, with targeting
+by audience, country, platform version, and random percentile.
+
+```swift
+import FirebaseRemoteConfig
+
+@MainActor
+final class FlagStore: ObservableObject {
+    @Published private(set) var ready = false
+    private let rc = RemoteConfig.remoteConfig()
+
+    init() {
+        let settings = RemoteConfigSettings()
+        // Dev: fetch often. Prod: 12 hours is a reasonable default.
+        settings.minimumFetchInterval = 3600
+        rc.configSettings = settings
+        rc.setDefaults(fromPlist: "RemoteConfigDefaults")
+    }
+
+    func start() async {
+        do {
+            _ = try await rc.fetchAndActivate()
+            ready = true
+        } catch {
+            // Always fall back to baked-in defaults — never block the UI.
+            ready = true
+        }
+    }
+
+    var newOnboardingEnabled: Bool {
+        rc["new_onboarding_enabled"].boolValue
+    }
+}
+```
+
+`RemoteConfigDefaults.plist` ships inside the app bundle with every key and a
+safe default. If the network is down on first launch you still get a working
+app — that's the whole point.
+
+### Staged rollouts and kill switches
+
+In the console set a **condition** like `Random percentile ≤ 10` and scope a
+flag to it. Start at 1%, watch Crashlytics, ramp to 10%, 50%, 100% over a week.
+Every big feature should also ship with a **kill switch** — a boolean flag that
+forces the old code path. When a P0 bug lands on Friday evening you flip the
+switch instead of cutting a hotfix.
+
+<Callout kind="warning" title="Do not put user-facing strings in Remote Config for localization">
+  It's tempting to A/B test copy by stuffing English strings into Remote Config
+  keys. Don't. You break `NSLocalizedString`, lose plural/genitive handling,
+  and every non-English user sees untranslated text. Use Remote Config to
+  select a <em>variant id</em>, and keep the actual strings in `.xcstrings`
+  where they can be localized properly.
+</Callout>
+
+## A/B Testing
+
+Firebase A/B Testing sits on top of Remote Config + Analytics. You define an
+experiment, pick an activation event, choose a primary metric (e.g. retention,
+`purchase`), and Firebase randomly assigns users to variants and tracks
+statistical significance.
+
+<FeatureGrid
+  features={[
+    { title: 'Bayesian stats', description: 'Reports "probability to beat baseline" instead of confusing p-values.' },
+    { title: 'Automatic rollouts', description: 'Promote the winning variant to 100% with one click once the experiment converges.' },
+    { title: 'Audience targeting', description: 'Run experiments only on new users, a specific country, or a custom Analytics audience.' },
+    { title: 'Multi-metric', description: 'Track guardrail metrics (crash-free users, session length) alongside the primary one.' },
+  ]}
+/>
+
+Good experiment hygiene: one change per experiment, run for at least two
+weekly cycles, pre-register your hypothesis, and ignore early "winners" before
+the sample size is adequate.
+
+## Firebase App Distribution vs TestFlight
+
+<ComparisonCard
+  left={{
+    label: 'App Distribution',
+    title: 'Firebase',
+    variant: 'new',
+    points: [
+      'Invite testers by email — no Apple ID in internal group needed',
+      'Android + iOS from one dashboard',
+      'No App Store review for tester builds',
+      'Fastlane + CI plugins are first-class',
+      'Builds expire after 150 days',
+    ],
+  }}
+  right={{
+    label: 'TestFlight',
+    title: 'Apple',
+    variant: 'neutral',
+    points: [
+      'Required for external beta at scale (up to 10,000 testers)',
+      'Goes through Beta App Review',
+      'Ties into App Store Connect, crash logs, feedback',
+      'Public links supported',
+      'Mandatory for Review-guideline-compliant beta testing',
+    ],
+  }}
+/>
+
+**Recommendation:** use App Distribution for your internal ring (engineering,
+design, QA) — fast iteration, no review friction. Promote release candidates
+into TestFlight for wider beta. This two-ring model gives you speed *and* the
+final Apple-verified sanity check before App Store submission.
+
+CI wiring with Fastlane:
+
+```ruby
+lane :internal do
+  build_app(scheme: "InboxApp", export_method: "ad-hoc")
+  firebase_app_distribution(
+    app: ENV["FIREBASE_APP_ID"],
+    groups: "engineering,design",
+    release_notes: last_git_commit[:message]
+  )
+end
+```
+
+## Alternatives and native paths
+
+Firebase is great — until it isn't. When your app grows you'll find parts of
+the stack you want to replace. Here's the menu of feature-flag and analytics
+competitors worth evaluating:
+
+<LibraryGrid libraries={[
+  { name: 'ConfigCat', tagline: 'Feature flags', description: 'Simple, privacy-friendly feature flag service with generous free tier and a clean Swift SDK.', url: 'https://configcat.com' },
+  { name: 'LaunchDarkly', tagline: 'Enterprise flags', description: 'Industry-standard feature management: percentage rollouts, targeting rules, experimentation. Expensive.', url: 'https://launchdarkly.com' },
+  { name: 'PostHog', tagline: 'Open-source product analytics', description: 'Self-hostable alternative to Firebase Analytics + experimentation with session replay and flags.', url: 'https://posthog.com' },
+  { name: 'Mixpanel', tagline: 'Product analytics', description: 'Event-based analytics with powerful funnels and retention reports. Strong free tier for mobile.', url: 'https://mixpanel.com' },
+]} />
+
+### Native Apple alternatives
+
+- **StoreKit 2 + iCloud KVS** for paywall flagging — if a flag only toggles
+  subscription UI, you might not need a third-party service at all.
+- **CloudKit public database** gives you a Firestore-like read-only config
+  store scoped to your Apple Developer team, with no extra vendor to manage.
+- **TestFlight + App Store Connect API** covers distribution and basic crash
+  analytics for small teams that don't need Crashlytics' custom-keys power.
+
+## Migrating away from Firebase
+
+You'll know it's time when one of these hurts:
+
+1. **Firestore query cost** dominates your Google Cloud bill — move hot paths
+   to a server API backed by Postgres or DynamoDB.
+2. **Security rules** become a second backend you can't test. Rewrite as a
+   proper API with typed endpoints.
+3. **Analytics sampling** at scale loses fidelity. Move to a data warehouse
+   (BigQuery export is one click from the Firebase console).
+4. **Vendor lock-in anxiety** from product. Mitigate by wrapping every Firebase
+   call behind a repository protocol from day one, so swapping implementations
+   is a week of work, not a quarter.
+
+<Callout kind="info" title="Plan the exit on day one, don't execute it">
+  Put a `UserRepository` protocol in front of Firebase Auth, a
+  `MessagesRepository` in front of Firestore, and a `FileStore` in front of
+  Storage. The abstraction costs almost nothing while you're in, and gives you
+  a clean seam when you decide to leave.
+</Callout>
+
+## Exercises
+
+1. Wrap a new "referral program" feature in a Remote Config boolean flag with
+   a 10% staged rollout, a kill-switch pattern, and a baked-in default. Verify
+   it still works in airplane mode on first launch.
+2. Ship an internal build to App Distribution from GitHub Actions on every
+   push to `main`, with release notes pulled from the commit message and
+   testers grouped by team. Bonus: notify a Slack channel on success.
+
+## Next module
+
+Continue to **[Module 08 · Advanced iOS Components](/docs/advanced-components/overview)** — extensions, background tasks, Maps, AVFoundation, and Widgets.

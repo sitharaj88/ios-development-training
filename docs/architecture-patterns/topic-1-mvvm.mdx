@@ -1,0 +1,259 @@
+---
+id: topic-1-mvvm
+title: Topic 1 · MVVM with SwiftUI
+sidebar_label: 1 · MVVM
+description: Why MVVM is SwiftUI's natural fit — @Observable view models, async intent, loading/error states, and testing view models without a single View.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, IOSArchDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 1 · 60–90 min · Module 04</span>
+  <h2>MVVM is the default architecture for every new SwiftUI screen</h2>
+  <div>
+    Model–View–ViewModel predates SwiftUI by a decade, but SwiftUI's
+    declarative rendering and <code>@Observable</code> macro make the pattern
+    feel native. Learn it once and you'll reach for it on every screen for
+    the rest of your career.
+  </div>
+</div>
+
+## Why MVVM, why now
+
+A SwiftUI `View` is a value type that describes UI as a function of state.
+That's a beautiful idea, but it creates a practical problem: where does the
+*state* live, and who mutates it? Drop all of that into the view and you end
+up with 800-line files full of `@State`, network calls, and formatting logic
+that nobody can test.
+
+MVVM answers cleanly:
+
+- **Model** — the truth (entities, repositories, pure Swift types).
+- **View** — layout, gestures, accessibility. Reads state. Sends intent.
+- **ViewModel** — holds observable state, exposes `async` intent functions,
+  translates Model events back into view-ready state.
+
+The view becomes a thin render layer. The view model becomes a plain Swift
+class you can unit test in milliseconds.
+
+## Evolution of the pattern
+
+<ComparisonCard
+  left={{
+    label: 'MVC (UIKit era)',
+    title: 'Massive View Controller',
+    variant: 'neutral',
+    points: [
+      'UIViewController owns view, state, and glue',
+      'Delegate + datasource patterns everywhere',
+      'Hard to test — UIKit must be present',
+      'Works, but grows to 2000-line files',
+    ],
+  }}
+  right={{
+    label: 'MVVM (SwiftUI era)',
+    title: 'View renders, VM decides',
+    variant: 'accent',
+    points: [
+      'View is a function of observable state',
+      'Intent functions encode every user action',
+      'VM has zero UIKit / SwiftUI imports',
+      'Tests run headless — no simulator needed',
+    ],
+  }}
+/>
+
+MVP (Model–View–Presenter) from the UIKit world is closely related, but the
+Presenter pushed updates through a `View` protocol. SwiftUI's reactive
+rendering removes that ceremony — the view *observes* and redraws itself.
+
+## The `@Observable` view model
+
+```swift
+import Observation
+
+@Observable
+final class HomeViewModel {
+    enum State: Equatable {
+        case idle
+        case loading
+        case loaded([Post])
+        case failed(String)
+    }
+
+    private(set) var state: State = .idle
+    private let repository: PostRepository
+
+    init(repository: PostRepository) {
+        self.repository = repository
+    }
+
+    @MainActor
+    func load() async {
+        state = .loading
+        do {
+            let posts = try await repository.latest()
+            state = .loaded(posts)
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    @MainActor
+    func refresh() async { await load() }
+}
+```
+
+Three rules are working together here:
+
+1. State is a single `enum` — impossible states are unrepresentable.
+2. Mutation happens on the main actor — UI binding is always safe.
+3. Dependencies arrive through `init` — nothing is hidden.
+
+<Callout kind="warning" title="ViewModels must not import SwiftUI">
+If your view model imports SwiftUI, you've broken the seam that makes it
+testable. Stick to <code>Foundation</code> and <code>Observation</code>. If
+you need <code>Color</code> or <code>Image</code> in the VM, you actually
+need a presentation model — a plain struct the view maps into SwiftUI
+types at render time.
+</Callout>
+
+## A full list screen, end to end
+
+```swift
+struct HomeView: View {
+    @State private var vm: HomeViewModel
+
+    init(repository: PostRepository) {
+        _vm = State(initialValue: HomeViewModel(repository: repository))
+    }
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("Feed")
+                .refreshable { await vm.refresh() }
+        }
+        .task { await vm.load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch vm.state {
+        case .idle, .loading:
+            ProgressView().controlSize(.large)
+        case .loaded(let posts) where posts.isEmpty:
+            ContentUnavailableView("No posts yet", systemImage: "tray")
+        case .loaded(let posts):
+            List(posts) { PostRow(post: $0) }
+        case .failed(let message):
+            ErrorView(message: message) {
+                Task { await vm.load() }
+            }
+        }
+    }
+}
+```
+
+Every responsibility is in exactly one place. Want to A/B test a new empty
+state? It's one case in the `switch`. Want to retry on a specific error?
+It's one branch in the VM.
+
+## Binding patterns
+
+SwiftUI offers three binding shapes for MVVM:
+
+- **Read-only state** — `vm.state`. The VM owns mutation.
+- **Two-way bindings** — `@Bindable var vm: HomeViewModel` in the child,
+  then `$vm.searchText` in a `TextField`. Prefer this for form fields.
+- **Intent functions** — `Button("Retry") { Task { await vm.load() } }`.
+  Verbs as methods, no logic in the closure.
+
+Intent functions are the most important of the three. They give you a
+testable vocabulary of what users can *do* on the screen.
+
+## Handling async work
+
+Every async call in a view model follows the same skeleton:
+
+<StepList
+  steps={[
+    { title: 'Flip to loading', description: 'Set state to .loading before the await so the UI shows a spinner immediately.' },
+    { title: 'Await the repository', description: 'Never call URLSession directly — go through a repository protocol so you can inject fakes.' },
+    { title: 'Map success to state', description: 'Transform domain types into whatever the view needs (often the domain type itself).' },
+    { title: 'Catch and humanize errors', description: 'Convert Error into a user-facing message. Log the original for diagnostics.' },
+  ]}
+/>
+
+Cancellation is free — SwiftUI's `.task` modifier cancels the Task when the
+view disappears. If you kick off manual `Task { }`s, store them on the VM
+and cancel in a `deinit`-equivalent hook.
+
+## Testing a VM with no SwiftUI
+
+```swift
+import Testing
+@testable import Feed
+
+@Suite struct HomeViewModelTests {
+    final class FakeRepo: PostRepository {
+        var result: Result<[Post], Error> = .success([])
+        func latest() async throws -> [Post] { try result.get() }
+    }
+
+    @Test func loadsPostsIntoLoadedState() async {
+        let repo = FakeRepo()
+        repo.result = .success([.fixture(id: "1")])
+        let vm = HomeViewModel(repository: repo)
+
+        await vm.load()
+
+        #expect(vm.state == .loaded([.fixture(id: "1")]))
+    }
+
+    @Test func surfacesErrorMessageOnFailure() async {
+        let repo = FakeRepo()
+        repo.result = .failure(URLError(.notConnectedToInternet))
+        let vm = HomeViewModel(repository: repo)
+
+        await vm.load()
+
+        if case .failed(let msg) = vm.state {
+            #expect(msg.contains("Internet"))
+        } else {
+            Issue.record("Expected .failed state")
+        }
+    }
+}
+```
+
+No simulator. No snapshot. No SwiftUI import in the test target. The VM is
+exercised as a pure Swift object — which is exactly the point.
+
+## Anti-patterns worth naming
+
+- **`@EnvironmentObject` inside VMs** — couples the VM to SwiftUI's runtime.
+- **Storing `AnyView`** in state — you're rebuilding UIKit inside SwiftUI.
+- **Calling `URLSession.shared` directly** — untestable, uncached, unhonest.
+- **Returning `Published<[Post]>`** — Combine is fine, but `@Observable` is
+  simpler for new code on iOS 17+.
+
+## Key takeaways
+
+- Use `@Observable` classes and a single `State` enum per screen.
+- Keep every dependency behind a protocol, injected through `init`.
+- Views call intent functions; VMs decide state transitions.
+- Tests should run without a simulator. If they don't, the layering is wrong.
+
+## Practice exercises
+
+1. Take an existing 300-line SwiftUI screen and extract a `ViewModel` with a
+   four-case `State` enum (`idle`, `loading`, `loaded`, `failed`). Move every
+   `URLSession` call behind a repository protocol.
+2. Write two unit tests for that view model using a hand-rolled fake
+   repository — one for the happy path and one for a network failure. Assert
+   state transitions only; never touch SwiftUI.
+
+## Next
+
+Continue to **[Topic 2 · Clean Architecture for iOS](/docs/architecture-patterns/topic-2-clean-architecture)** — scale MVVM into a layered, package-based app structure that survives team growth.

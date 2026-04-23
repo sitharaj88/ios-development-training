@@ -1,0 +1,327 @@
+---
+id: topic-3-auth-resilience
+title: Topic 3 · Auth, Resilience & GraphQL
+sidebar_label: 3 · Auth & Resilience
+description: OAuth 2.0 PKCE with ASWebAuthenticationSession, refresh-token queueing, exponential backoff, certificate pinning, HMAC signing, and Apollo GraphQL.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 06 · Topic 3 · Auth & hardening</span>
+  <h2>The 10% of networking that takes 90% of the time</h2>
+  <div>
+    OAuth, token refresh without thundering herds, retries that don't retry forever,
+    certificate pinning, request signing, offline queues, and GraphQL. This is the
+    production-hardening topic — the work that keeps an app alive at scale.
+  </div>
+</div>
+
+## OAuth 2.0 Authorization Code + PKCE
+
+PKCE ("Pixy") is the flavour of OAuth that works without a client secret — which
+you can't keep secret on a mobile device. The flow:
+
+<StepList
+  steps={[
+    { title: '1 · Generate a code_verifier', description: 'Random 43–128 char string. Stored in memory during the flow.' },
+    { title: '2 · Derive code_challenge', description: 'BASE64URL(SHA256(code_verifier)) — sent with the auth request.' },
+    { title: '3 · Open the auth URL', description: 'ASWebAuthenticationSession opens the browser in a sandboxed window with the provider login.' },
+    { title: '4 · Exchange the code', description: 'POST code + code_verifier to /token, receive access_token + refresh_token.' },
+    { title: '5 · Store in Keychain', description: 'Access token in one item, refresh token in a biometric-gated item (see Module 05 Topic 2).' },
+  ]}
+/>
+
+### The implementation
+
+```swift
+import AuthenticationServices
+import CryptoKit
+
+final class OAuthCoordinator: NSObject, ASWebAuthenticationPresentationContextProviding {
+    let clientID: String
+    let redirect: URL
+    let authorize: URL
+    let token: URL
+
+    func signIn() async throws -> TokenPair {
+        let verifier = Self.codeVerifier()
+        let challenge = Self.codeChallenge(for: verifier)
+        var comps = URLComponents(url: authorize, resolvingAgainstBaseURL: false)!
+        comps.queryItems = [
+            .init(name: "response_type", value: "code"),
+            .init(name: "client_id", value: clientID),
+            .init(name: "redirect_uri", value: redirect.absoluteString),
+            .init(name: "scope", value: "openid profile offline_access"),
+            .init(name: "code_challenge", value: challenge),
+            .init(name: "code_challenge_method", value: "S256"),
+            .init(name: "state", value: UUID().uuidString),
+        ]
+        let callback = try await webAuth(start: comps.url!)
+        let code = URLComponents(url: callback, resolvingAgainstBaseURL: false)!
+            .queryItems!.first(where: { $0.name == "code" })!.value!
+        return try await exchange(code: code, verifier: verifier)
+    }
+
+    private func webAuth(start: URL) async throws -> URL {
+        try await withCheckedThrowingContinuation { cont in
+            let session = ASWebAuthenticationSession(
+                url: start,
+                callbackURLScheme: redirect.scheme
+            ) { url, error in
+                if let url { cont.resume(returning: url) }
+                else { cont.resume(throwing: error ?? URLError(.cancelled)) }
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = true
+            session.start()
+        }
+    }
+
+    private static func codeVerifier() -> String {
+        let data = (0..<32).map { _ in UInt8.random(in: 0...255) }
+        return Data(data).base64URLEncodedString()
+    }
+    private static func codeChallenge(for verifier: String) -> String {
+        Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncodedString()
+    }
+    func presentationAnchor(for _: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first!
+    }
+}
+```
+
+`prefersEphemeralWebBrowserSession = true` means no Safari cookies leak in or
+out — critical for multi-account UX and regulated environments.
+
+## Refresh tokens without deadlock
+
+The hard part isn't refreshing the token — it's doing it when 50 requests all
+401 at once. Every one of them tries to refresh, and now you've burned 50
+refresh tokens. The fix is to **serialize and deduplicate** with an actor:
+
+```swift
+actor TokenRefresher {
+    private var cached: Token?
+    private var inFlight: Task<Token, Error>?
+
+    func validToken() async throws -> Token {
+        if let token = cached, !token.isExpired { return token }
+        if let task = inFlight { return try await task.value }
+        let task = Task { try await self.performRefresh() }
+        inFlight = task
+        defer { inFlight = nil }
+        let fresh = try await task.value
+        cached = fresh
+        return fresh
+    }
+
+    private func performRefresh() async throws -> Token {
+        let refresh = try Keychain.shared.read(account: "refresh")
+        // POST to /token with grant_type=refresh_token&refresh_token=...
+        // decode, return
+        return try await doHTTPRefresh(refresh: refresh)
+    }
+}
+```
+
+Because `actor` serializes method entry, only one `performRefresh` ever runs.
+The other 49 callers `await` the same `inFlight` task and all receive the same
+new token. Zero thundering herd.
+
+## Retry with exponential backoff + jitter
+
+```swift
+func withRetry<T>(
+    maxAttempts: Int = 4,
+    baseDelay: TimeInterval = 0.5,
+    shouldRetry: (Error) -> Bool = { _ in true },
+    _ operation: () async throws -> T
+) async throws -> T {
+    var lastError: Error?
+    for attempt in 0..<maxAttempts {
+        do { return try await operation() }
+        catch {
+            guard shouldRetry(error), attempt < maxAttempts - 1 else { throw error }
+            let backoff = baseDelay * pow(2, Double(attempt))
+            let jitter = Double.random(in: 0...0.3) * backoff
+            try await Task.sleep(for: .seconds(backoff + jitter))
+            lastError = error
+        }
+    }
+    throw lastError ?? URLError(.unknown)
+}
+```
+
+Retry only on **transient** failures: timeouts, 502/503/504, connection lost.
+**Never retry** 4xx (except 401 after refresh) — they won't succeed next time.
+
+## Certificate pinning
+
+Pinning prevents a compromised CA (or a corporate MITM proxy) from reading your
+traffic. The SwiftCrypto-friendly path — hash the SubjectPublicKeyInfo and
+compare:
+
+```swift
+final class Pinner: NSObject, URLSessionDelegate {
+    let pinnedSPKIHashes: Set<Data>
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard
+            challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+            let trust = challenge.protectionSpace.serverTrust,
+            let cert = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first,
+            let key  = SecCertificateCopyKey(cert),
+            let spki = SecKeyCopyExternalRepresentation(key, nil) as Data?
+        else { return completionHandler(.cancelAuthenticationChallenge, nil) }
+        let hash = Data(SHA256.hash(data: spki))
+        if pinnedSPKIHashes.contains(hash) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+}
+```
+
+Pin at least two keys (current + backup) so you can rotate without an app
+update.
+
+<Callout kind="warning" title="Never ship a static Bearer token in your binary">
+Anyone with `strings` or Hopper can extract hardcoded credentials from an `.ipa`
+in seconds. No API key, OAuth client secret, or admin token should live in your
+binary. Use PKCE for user auth, short-lived server-issued tokens for backend
+operations, and App Attest for device identity. If an intern adds `let apiKey =`
+in a commit — rotate the key and reject the PR.
+</Callout>
+
+## Request signing (HMAC)
+
+Some APIs (AWS, Stripe webhooks) require you sign each request with an HMAC
+over the method + path + body + timestamp. Stops replay attacks if the signing
+key is device-specific.
+
+```swift
+import CryptoKit
+
+func sign(_ request: inout URLRequest, secret: SymmetricKey) {
+    let ts = String(Int(Date.now.timeIntervalSince1970))
+    let method = request.httpMethod ?? "GET"
+    let path = request.url?.path ?? ""
+    let body = request.httpBody ?? Data()
+    var canonical = Data("\(method)\n\(path)\n\(ts)\n".utf8)
+    canonical.append(body)
+    let mac = HMAC<SHA256>.authenticationCode(for: canonical, using: secret)
+    request.setValue(ts, forHTTPHeaderField: "X-Timestamp")
+    request.setValue(Data(mac).base64EncodedString(), forHTTPHeaderField: "X-Signature")
+}
+```
+
+## Offline queue
+
+For writes that must succeed eventually (post a message, submit a form), queue
+them to disk and retry on reconnect:
+
+<StepList
+  steps={[
+    { title: '1 · Persist the intent', description: 'Store a PendingMutation in SwiftData/GRDB — method, URL, body, idempotency key.' },
+    { title: '2 · Try immediately if online', description: 'Fire the network call; on success, delete the row.' },
+    { title: '3 · On failure or offline, keep the row', description: 'NWPathMonitor reacts to connectivity; a background flusher drains the queue.' },
+    { title: '4 · Idempotency keys are mandatory', description: 'Server must deduplicate — the same queue entry may retry after the server already processed it.' },
+  ]}
+/>
+
+## REST vs GraphQL
+
+<ComparisonCard
+  left={{
+    label: 'Mature',
+    title: 'REST',
+    variant: 'old',
+    points: [
+      'Resource-oriented, HTTP-native',
+      'Easy to cache at the URL layer',
+      'Over/underfetching — clients pay for backend shape',
+      'Ubiquitous tooling, trivial to mock',
+    ],
+  }}
+  right={{
+    label: 'Typed',
+    title: 'GraphQL',
+    variant: 'new',
+    points: [
+      'Client asks for exactly what it needs',
+      'Schema-driven codegen — types free',
+      'Single endpoint; subscriptions for realtime',
+      'Complex caching, N+1 risks on the backend',
+    ],
+  }}
+/>
+
+## Apollo iOS for GraphQL
+
+Apollo generates typed Swift from your `.graphql` files so queries aren't strings.
+
+```graphql
+# LaunchList.graphql
+query LaunchList {
+  launches(limit: 20) {
+    id
+    mission_name
+    launch_date_utc
+  }
+}
+```
+
+Run `apollo-ios-cli generate` and you get a typed `LaunchListQuery` struct. Use
+it:
+
+```swift
+import Apollo
+
+let client = ApolloClient(url: URL(string: "https://api.spacex.land/graphql/")!)
+
+client.fetch(query: LaunchListQuery()) { result in
+    switch result {
+    case .success(let gql):
+        let launches = gql.data?.launches ?? []
+        print(launches.compactMap { $0?.missionName })
+    case .failure(let error):
+        print("GraphQL error: \(error)")
+    }
+}
+```
+
+Full setup: [apollographql.com/docs/ios](https://www.apollographql.com/docs/ios).
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Alamofire', tagline: 'HTTP client', description: 'Request adapters, retriers, and response serializers that let you skip wiring retries yourself.', url: 'https://github.com/Alamofire/Alamofire', recommended: true },
+  { name: 'Apollo iOS', tagline: 'GraphQL client', description: 'Codegen, normalized cache, subscriptions. The production GraphQL path on iOS.', url: 'https://github.com/apollographql/apollo-ios' },
+  { name: 'Moya', tagline: 'Typed API layer', description: 'Enum-driven abstraction over Alamofire — one case per endpoint, testable by construction.', url: 'https://github.com/Moya/Moya' },
+  { name: 'AppAuth', tagline: 'OAuth 2.0 / OIDC', description: 'OpenID Foundation reference implementation of Auth Code + PKCE. Use when rolling your own is risky.', url: 'https://github.com/openid/AppAuth-iOS' },
+]} />
+
+## Key takeaways
+
+- **PKCE is the only correct OAuth flow on mobile** — you cannot keep a client secret.
+- **Serialize token refresh in an actor** — `inFlight` task dedupes concurrent 401s.
+- **Retry only on transient errors** with exponential backoff + jitter.
+- **Pin at least two keys** so you can rotate without an app update.
+- **Never ship static secrets** — if you did, rotate now.
+- **GraphQL pays off when you have many clients** on one schema; otherwise REST is fine.
+
+## Practice exercises
+
+1. Ship a sign-in flow against a real OIDC provider (Auth0 free tier) using `ASWebAuthenticationSession` + PKCE, storing tokens in a biometric-gated Keychain.
+2. Build the `TokenRefresher` actor and fire 100 concurrent requests that all 401 on the first attempt; verify exactly one refresh happens and all 100 succeed on retry.
+
+## Next module
+
+Continue to **[Module 07 · Firebase & Backend Services](/docs/firebase-cloud/overview)** — managed backends, realtime databases, auth, and push.

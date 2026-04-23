@@ -1,0 +1,286 @@
+---
+id: topic-1-urlsession-codable
+title: Topic 1 · URLSession & Codable
+sidebar_label: 1 · URLSession & Codable
+description: URLSession with async/await, URLSessionConfiguration, JSONDecoder strategies, custom Codable, multipart uploads, and background sessions.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 06 · Topic 1 · HTTP fundamentals</span>
+  <h2>HTTP that doesn't embarrass you in production</h2>
+  <div>
+    <code>URLSession</code> plus <code>async</code>/<code>await</code> plus <code>Codable</code>
+    is enough for 95% of apps. The 5% of extra work — timeouts, response validation,
+    date strategies, multipart, backgrounding — is what separates a demo from a shipping product.
+  </div>
+</div>
+
+## The modern four-verb API
+
+Since iOS 15, `URLSession` exposes a clean async surface:
+
+- `data(for:)` / `data(from:)` — GET/POST/anything returning a body in memory.
+- `upload(for:from:)` — POST/PUT with a `Data` or file body (multipart uploads live here).
+- `download(for:)` — writes straight to a temp file, returns the file URL.
+- `bytes(for:)` — returns an `AsyncSequence<UInt8>` for streaming.
+
+```swift
+let (data, response) = try await URLSession.shared.data(from: url)
+```
+
+The tuple return forces you to acknowledge the response. Use it.
+
+## Always validate `HTTPURLResponse`
+
+`data(for:)` succeeds on any HTTP response — including 500s. You have to check:
+
+```swift
+func assertOK(_ response: URLResponse) throws {
+    guard let http = response as? HTTPURLResponse else { throw APIError.notHTTP }
+    switch http.statusCode {
+    case 200..<300: return
+    case 401:       throw APIError.unauthorized
+    case 404:       throw APIError.notFound
+    case 500..<600: throw APIError.server(http.statusCode)
+    default:        throw APIError.unexpectedStatus(http.statusCode)
+    }
+}
+```
+
+<Callout kind="warning" title="Always validate the HTTPURLResponse status">
+A non-throwing `try await session.data(for:)` does not mean "success" — it means
+"the request reached the server and came back". A 500 looks identical to a 200
+until you inspect `HTTPURLResponse.statusCode`. Build the assertion into a single
+helper and call it on every response.
+</Callout>
+
+## Configure the session, don't use `.shared`
+
+`.shared` is fine for prototypes. For real apps, build a session per backend:
+
+```swift
+extension URLSession {
+    static let api: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 60
+        config.waitsForConnectivity = true
+        config.httpAdditionalHeaders = [
+            "Accept":       "application/json",
+            "Accept-Language": Locale.preferredLanguages.first ?? "en",
+            "User-Agent":   "TravelApp/1.0 iOS",
+        ]
+        config.requestCachePolicy = .useProtocolCachePolicy
+        config.urlCache = URLCache(memoryCapacity: 20_000_000,
+                                   diskCapacity: 100_000_000)
+        return URLSession(configuration: config)
+    }()
+}
+```
+
+`waitsForConnectivity = true` defers the request until the device has a network
+connection instead of failing immediately — golden for offline-capable apps.
+
+## Codable that survives real APIs
+
+Real JSON is inconsistent. Configure the decoder once, globally:
+
+```swift
+extension JSONDecoder {
+    static let api: JSONDecoder = {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+}
+```
+
+Then your types stay clean:
+
+```swift
+struct Product: Codable, Identifiable, Hashable {
+    let id: UUID
+    let name: String
+    let price: Decimal
+    let imageURL: URL?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, price, createdAt
+        case imageURL = "image_url"          // snake-case conversion would map to imageUrl — override
+    }
+}
+```
+
+### Nested containers for ugly shapes
+
+When the server wraps everything in `{ "data": { ... }, "meta": { ... } }`:
+
+```swift
+struct APIResponse<T: Decodable>: Decodable {
+    let data: T
+    let meta: Meta
+    struct Meta: Decodable { let page: Int; let total: Int }
+}
+```
+
+### Heterogeneous arrays (the `type` discriminator pattern)
+
+```swift
+enum FeedItem: Decodable {
+    case post(Post), ad(Ad), video(Video)
+
+    private enum Kind: String, Decodable { case post, ad, video }
+    private enum Keys: String, CodingKey { case type }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        switch try c.decode(Kind.self, forKey: .type) {
+        case .post:  self = .post(try Post(from: decoder))
+        case .ad:    self = .ad(try Ad(from: decoder))
+        case .video: self = .video(try Video(from: decoder))
+        }
+    }
+}
+```
+
+Every payload decodes through the same pathway — one allocation, no second pass.
+
+## A complete API client
+
+```swift
+struct APIClient {
+    let base: URL
+    let session: URLSession = .api
+    let decoder: JSONDecoder = .api
+    let tokenProvider: () async throws -> String?
+
+    func get<T: Decodable>(_ path: String, as: T.Type = T.self) async throws -> T {
+        try await send(makeRequest(path: path, method: "GET"))
+    }
+
+    func post<T: Decodable, B: Encodable>(
+        _ path: String, body: B, as: T.Type = T.self
+    ) async throws -> T {
+        var req = try makeRequest(path: path, method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        return try await send(req)
+    }
+
+    private func makeRequest(path: String, method: String) async throws -> URLRequest {
+        var req = URLRequest(url: base.appending(path: path))
+        req.httpMethod = method
+        if let token = try await tokenProvider() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        return req
+    }
+
+    private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    static func assertOK(_ response: URLResponse) throws { /* as above */ }
+}
+```
+
+One struct, one code path, one error surface. View models inject it; never call
+`URLSession` from a view.
+
+## Old vs new — retire the closures
+
+<ComparisonCard
+  left={{
+    label: 'Legacy',
+    title: 'Completion-handler URLSession',
+    variant: 'old',
+    points: [
+      'Callback soup, pyramid of doom',
+      'Manual cancellation via dataTask references',
+      'Error handling scattered across closures',
+      'Still in code you inherit — read it, rewrite it',
+    ],
+  }}
+  right={{
+    label: 'Modern',
+    title: 'async/await URLSession',
+    variant: 'new',
+    points: [
+      'Linear code, structured errors',
+      'Built-in cancellation via Task',
+      'Composes with async sequences and actors',
+      'iOS 15+ — the right default',
+    ],
+  }}
+/>
+
+## Multipart uploads
+
+When you must send a file + JSON metadata in one request, multipart/form-data is
+the protocol. The trick is building the body correctly:
+
+```swift
+func uploadAvatar(_ image: Data, meta: Metadata) async throws -> UploadResponse {
+    let boundary = "Boundary-\(UUID().uuidString)"
+    var body = Data()
+    func append(_ s: String) { body.append(Data(s.utf8)) }
+
+    append("--\(boundary)\r\n")
+    append(#"Content-Disposition: form-data; name="meta"\#r\#n"#)
+    append("Content-Type: application/json\r\n\r\n")
+    body.append(try JSONEncoder().encode(meta))
+    append("\r\n--\(boundary)\r\n")
+    append(#"Content-Disposition: form-data; name="file"; filename="avatar.jpg"\#r\#n"#)
+    append("Content-Type: image/jpeg\r\n\r\n")
+    body.append(image)
+    append("\r\n--\(boundary)--\r\n")
+
+    var req = URLRequest(url: base.appending(path: "upload"))
+    req.httpMethod = "POST"
+    req.setValue("multipart/form-data; boundary=\(boundary)",
+                 forHTTPHeaderField: "Content-Type")
+    let (data, response) = try await URLSession.api.upload(for: req, from: body)
+    try APIClient.assertOK(response)
+    return try JSONDecoder.api.decode(UploadResponse.self, from: data)
+}
+```
+
+## Background sessions — downloads that survive app death
+
+For large downloads that must continue when the user backgrounds the app:
+
+```swift
+let config = URLSessionConfiguration.background(withIdentifier: "com.example.bg")
+config.isDiscretionary = true          // let iOS pick the best time
+config.sessionSendsLaunchEvents = true // wake the app when done
+let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+session.downloadTask(with: url).resume()
+```
+
+You implement `URLSessionDownloadDelegate` to be notified when files arrive, and
+the app delegate's `handleEventsForBackgroundURLSession` to wire up the wake-up.
+
+Full reference: [Apple — Downloading files in the background](https://developer.apple.com/documentation/foundation/url_loading_system/downloading_files_in_the_background).
+
+## Key takeaways
+
+- **`URLSession` + `async`/`await` + `Codable`** is the default — no library needed.
+- **Validate every response** — a 500 is a success at the transport layer.
+- **Configure sessions per backend** — timeouts, caching, default headers live here.
+- **Centralize decoding strategies** — one `JSONDecoder.api` singleton beats 30 copies.
+- **Background sessions** exist for downloads that must survive the app going away.
+
+## Practice exercises
+
+1. Build the `APIClient` above against [https://jsonplaceholder.typicode.com](https://jsonplaceholder.typicode.com) with typed `Post` and `Comment` models and a `listPosts()` async function.
+2. Implement a heterogeneous `FeedItem` decoder (post / ad / video) against a fixture JSON file and add unit tests using `JSONDecoder`.
+
+## Next
+
+Continue to **[Topic 2 · Real-time, Streaming & Images](./topic-2-realtime-transport)** — WebSockets, SSE, streaming, and image pipelines.

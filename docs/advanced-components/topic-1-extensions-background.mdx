@@ -1,0 +1,291 @@
+---
+id: topic-1-extensions-background
+title: Topic 1 · App Extensions & Background Tasks
+sidebar_label: 1 · Extensions & Background
+description: App extensions live in their own process, and background tasks run on iOS's schedule — design for separation, idempotency, and unpredictable wakeups.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 1 · Week 1 · Extensions & background</span>
+  <h2>Ship beyond the main window</h2>
+  <div>
+    Share sheets, rich push, App Intents, and BGTaskScheduler are how real iOS
+    apps stay useful while the user is somewhere else. Every surface you add is
+    a new <em>process</em>, a new binary, and a new sandbox — design for that.
+  </div>
+</div>
+
+## Why extensions are different
+
+An app extension is not a module inside your app — it's a separate target that
+ships inside your `.app` bundle, is launched by iOS (not by you), and runs in
+its own sandbox with its own memory budget (often ~60–120 MB).
+
+<Callout type="warning" title="Extensions are a different binary and a different process">
+  You cannot call into your app's code directly from an extension. You share
+  files via an <strong>App Group</strong>, KV data via <code>UserDefaults(suiteName:)</code>,
+  and secrets via a Keychain access group. Any singleton you rely on in the app
+  does not exist in the extension. Design the extension's data layer from
+  scratch, and treat the app as a peer, not a parent.
+</Callout>
+
+## The extension surfaces Apple gives you
+
+<FeatureGrid features={[
+  { title: 'Share Extension', description: 'Invoked from the system Share sheet. Accepts URLs, text, images, files. Perfect for "save to my app" flows.' },
+  { title: 'Action Extension', description: 'Transforms content in place — translate selection, mark up a PDF, inspect a webpage. Returns a modified item.' },
+  { title: 'Notification Service', description: 'Mutates an incoming push payload before it is shown — decrypt bodies, download an image attachment for rich push.' },
+  { title: 'Notification Content', description: 'Custom UI rendered when a notification is long-pressed. Full SwiftUI or UIKit view, limited interactivity.' },
+  { title: 'App Intents (Shortcuts)', description: 'Siri, Shortcuts, Spotlight, and Focus filters. App Intents replaces SiriKit for almost every new use case.' },
+  { title: 'Widget Extension', description: 'Home Screen, Lock Screen, and StandBy widgets. Covered in Topic 3.' },
+]} />
+
+## App Groups — the shared sandbox
+
+Enable App Groups on *both* targets (app + extension) in Signing & Capabilities,
+pick an identifier like `group.com.example.shop`, and you get a shared
+container URL you can read and write from either process.
+
+```swift
+enum SharedStore {
+    static let groupID = "group.com.example.shop"
+
+    static var containerURL: URL {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: groupID)!
+    }
+
+    static var defaults: UserDefaults {
+        UserDefaults(suiteName: groupID)!
+    }
+
+    static func writeDraft(_ draft: Draft) throws {
+        let url = containerURL.appendingPathComponent("draft.json")
+        try JSONEncoder().encode(draft).write(to: url, options: .atomic)
+    }
+}
+```
+
+Use file coordination (`NSFileCoordinator`) if two processes can write the
+same file simultaneously — otherwise you will corrupt data.
+
+## Notification Service Extension — rich push
+
+Rich push (image, video, decrypted body) requires a Notification Service
+Extension. Your server sends `"mutable-content": 1` and a URL; the extension
+downloads and attaches:
+
+```swift
+final class NotificationService: UNNotificationServiceExtension {
+    var handler: ((UNNotificationContent) -> Void)?
+    var best: UNMutableNotificationContent?
+
+    override func didReceive(_ request: UNNotificationRequest,
+                             withContentHandler ch: @escaping (UNNotificationContent) -> Void) {
+        handler = ch
+        best = request.content.mutableCopy() as? UNMutableNotificationContent
+
+        guard let urlString = request.content.userInfo["image_url"] as? String,
+              let url = URL(string: urlString) else {
+            ch(best ?? request.content); return
+        }
+
+        URLSession.shared.downloadTask(with: url) { [weak self] file, _, _ in
+            guard let self, let file, let best = self.best else { return }
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".jpg")
+            try? FileManager.default.moveItem(at: file, to: dest)
+            if let attach = try? UNNotificationAttachment(identifier: "image", url: dest) {
+                best.attachments = [attach]
+            }
+            ch(best)
+        }.resume()
+    }
+
+    override func serviceExtensionTimeWillExpire() {
+        if let best { handler?(best) }
+    }
+}
+```
+
+You have ~30 seconds. Always call the handler — even on failure — or the user
+sees nothing.
+
+## App Intents — one protocol, many surfaces
+
+App Intents (iOS 16+) is the modern replacement for SiriKit for most verbs.
+One `AppIntent` struct powers Siri, Shortcuts, Spotlight, and the Action Button.
+
+```swift
+struct LogExpenseIntent: AppIntent {
+    static var title: LocalizedStringResource = "Log expense"
+    static var description = IntentDescription("Record a new expense in Shop.")
+
+    @Parameter(title: "Amount") var amount: Double
+    @Parameter(title: "Category") var category: String
+
+    func perform() async throws -> some IntentResult {
+        try await ExpenseStore.shared.add(amount: amount, category: category)
+        return .result(dialog: "Logged \(amount) to \(category).")
+    }
+}
+```
+
+No separate target needed for basic intents — they can live in the main app.
+Put them in a framework if you also want widget configuration to use them.
+
+## BGTaskScheduler — the right way
+
+Two flavors: `BGAppRefreshTask` for short fetches, `BGProcessingTask` for
+longer work that runs when the device is idle and charging.
+
+<ComparisonCard
+  left={{
+    label: 'BGAppRefreshTask',
+    title: 'Short, user-facing freshness',
+    variant: 'neutral',
+    points: [
+      'Up to ~30 seconds of runtime',
+      'iOS picks timing based on usage patterns',
+      'Use for feed refresh, badge updates',
+      'No guarantee of frequency or delivery',
+    ],
+  }}
+  right={{
+    label: 'BGProcessingTask',
+    title: 'Long maintenance work',
+    variant: 'neutral',
+    points: [
+      'Minutes; only when idle (+ optionally charging)',
+      'DB compaction, ML training, bulk uploads',
+      'Can require network or external power',
+      'Heavier budget, less frequent opportunities',
+    ],
+  }}
+/>
+
+### Step by step
+
+<StepList
+  steps={[
+    { title: 'Declare identifiers in Info.plist', description: 'Add BGTaskSchedulerPermittedIdentifiers with e.g. com.example.shop.refresh and com.example.shop.cleanup.' },
+    { title: 'Enable background modes', description: 'In Signing & Capabilities, turn on Background fetch and Background processing.' },
+    { title: 'Register at launch', description: 'Call BGTaskScheduler.shared.register once, synchronously, in application(_:didFinishLaunchingWithOptions:) or the App init.' },
+    { title: 'Schedule after work', description: 'Submit the next request whenever you finish processing (not just at launch), so iOS keeps a pending request on file.' },
+    { title: 'Always set task.expirationHandler', description: 'iOS can cut you off any time. Cancel your work and call task.setTaskCompleted(success:) — otherwise the system throttles you.' },
+  ]}
+/>
+
+### Complete example
+
+```swift
+import BackgroundTasks
+
+enum BG {
+    static let refreshID = "com.example.shop.refresh"
+    static let cleanupID = "com.example.shop.cleanup"
+}
+
+@main
+struct ShopApp: App {
+    init() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: BG.refreshID, using: nil) { task in
+            handleRefresh(task: task as! BGAppRefreshTask)
+        }
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: BG.cleanupID, using: nil) { task in
+            handleCleanup(task: task as! BGProcessingTask)
+        }
+    }
+    var body: some Scene { WindowGroup { RootView() } }
+}
+
+func scheduleRefresh() {
+    let req = BGAppRefreshTaskRequest(identifier: BG.refreshID)
+    req.earliestBeginDate = .now.addingTimeInterval(15 * 60)
+    try? BGTaskScheduler.shared.submit(req)
+}
+
+func handleRefresh(task: BGAppRefreshTask) {
+    scheduleRefresh() // chain the next one immediately
+
+    let op = Task {
+        do {
+            try await FeedService.shared.refresh()
+            task.setTaskCompleted(success: true)
+        } catch {
+            task.setTaskCompleted(success: false)
+        }
+    }
+    task.expirationHandler = { op.cancel() }
+}
+
+func handleCleanup(task: BGProcessingTask) {
+    let req = BGProcessingTaskRequest(identifier: BG.cleanupID)
+    req.requiresExternalPower = true
+    req.requiresNetworkConnectivity = false
+    try? BGTaskScheduler.shared.submit(req)
+
+    let op = Task {
+        await Database.shared.vacuum()
+        task.setTaskCompleted(success: true)
+    }
+    task.expirationHandler = { op.cancel() }
+}
+```
+
+<Callout type="tip" title="Force a task to run in the debugger">
+  Set a breakpoint right after you submit a request, then run this in lldb:
+  <br />
+  <code>e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"com.example.shop.refresh"]</code>
+  <br />
+  You cannot wait for the real scheduler during development — iOS may take
+  hours or days to grant you a slot.
+</Callout>
+
+## Background URLSession — uploads and downloads that survive termination
+
+For large transfers that must finish even if the user swipes the app away:
+
+```swift
+let config = URLSessionConfiguration.background(withIdentifier: "com.example.shop.bg")
+config.isDiscretionary = true           // let iOS pick the best time
+config.sessionSendsLaunchEvents = true  // wake the app on completion
+let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+```
+
+Implement `application(_:handleEventsForBackgroundURLSession:completionHandler:)`
+in your AppDelegate to resume and finish the work after a cold launch.
+
+## Silent push — server-initiated refresh
+
+Send a push with `"content-available": 1` and no alert/sound/badge. iOS wakes
+your app briefly (often) to call `application(_:didReceiveRemoteNotification:)`.
+Same budget as a refresh task, same rules: do small, idempotent work, then
+finish. Silent push is throttled aggressively — do not rely on it for more
+than a few updates per hour.
+
+## Recommended reading
+
+<LibraryGrid libraries={[
+  { name: 'BackgroundTasks', tagline: 'BGTaskScheduler docs', description: 'Apple\'s reference for BGAppRefreshTask and BGProcessingTask, including scheduling and expiration.', url: 'https://developer.apple.com/documentation/backgroundtasks', recommended: true },
+  { name: 'App Extensions', tagline: 'Extension programming guide', description: 'Architectural rules for every extension point iOS exposes.', url: 'https://developer.apple.com/documentation/foundation/app_extension_support' },
+  { name: 'App Intents', tagline: 'Siri + Shortcuts framework', description: 'Modern protocol-driven intents replacing SiriKit for most apps.', url: 'https://developer.apple.com/documentation/appintents' },
+  { name: 'UserNotifications', tagline: 'Rich & actionable push', description: 'UNNotificationServiceExtension, content extensions, categories, and actions.', url: 'https://developer.apple.com/documentation/usernotifications' },
+]} />
+
+## Exercises
+
+1. Build a Share Extension for a note-taking app. When the user shares a URL,
+   the extension saves the title + URL into the App Group container, and the
+   main app shows it in an "inbox" list on next launch.
+2. Register a `BGAppRefreshTask` that fetches the latest unread count from
+   your API and updates `UIApplication.shared.applicationIconBadgeNumber`.
+   Test it end-to-end using the lldb `_simulateLaunchForTaskWithIdentifier:`
+   trick.
+
+## Next
+
+Continue to **[Topic 2 · Location, Maps, Camera & Audio](/docs/advanced-components/topic-2-location-media-sensors)**
+to learn the sensor and media frameworks iOS ships with.

@@ -107,10 +107,12 @@ function BookOpen() {
 
 export default function Home(): React.JSX.Element {
   const {siteConfig} = useDocusaurusContext();
+  const brochureUrl = (siteConfig.customFields?.brochureUrl as string) ?? '#';
+  const contactEmail = (siteConfig.customFields?.contactEmail as string) ?? 'sitharaj.info@gmail.com';
 
   return (
     <Layout
-      title="iOS Development Complete Guide"
+      title="iOS Development Training — Swift, SwiftUI, Architecture, App Store"
       description={siteConfig.tagline}
     >
       <header className="hero-section">
@@ -143,11 +145,14 @@ export default function Home(): React.JSX.Element {
               Explore Curriculum
               <span aria-hidden="true">→</span>
             </Link>
+            <Link to="/docs/roadmap" className="btn-secondary">
+              View Roadmap
+            </Link>
             <Link
-              href="https://pub-4bd5087c503a41ccafd70ad5588f3220.r2.dev/brochures/iOS_Development_Training_Sitharaj.pdf"
+              href={brochureUrl}
               className="btn-secondary"
             >
-              Download Brochure
+              Brochure PDF
             </Link>
           </div>
 
@@ -341,7 +346,7 @@ export default function Home(): React.JSX.Element {
                 Start the Curriculum
                 <span aria-hidden="true">→</span>
               </Link>
-              <Link href="mailto:sitharaj.info@gmail.com" className="btn-secondary">
+              <Link href={`mailto:${contactEmail}`} className="btn-secondary">
                 Contact for Training
               </Link>
             </div>

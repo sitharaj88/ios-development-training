@@ -1,0 +1,288 @@
+---
+id: glossary
+title: iOS Development Glossary
+sidebar_label: Glossary
+slug: /glossary
+description: Fast definitions for the Swift, SwiftUI, and Apple-platform vocabulary used throughout this curriculum.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+A focused glossary of the terms you'll see throughout the curriculum. Entries
+are deliberately short — one paragraph max, with a pointer to the module where
+the concept lives in depth.
+
+<Callout kind="tip" title="Not listed?">
+Use the search bar (top right) — the site has full-text search across every
+page. If a term is still missing, it's probably documented under a slightly
+different name (e.g. "ARC" vs "memory management").
+</Callout>
+
+## A
+
+**Accessibility (a11y).** VoiceOver, Dynamic Type, reduced motion, colour
+contrast. Every production iOS app must support them; SwiftUI surfaces them
+through `accessibilityLabel`, `accessibilityHint`, and traits.
+
+**Actor.** A reference type that serializes access to its mutable state,
+eliminating data races at compile time. The backbone of Swift's strict
+concurrency model. See [Module 12](/docs/advanced-trending/overview).
+
+**APNs (Apple Push Notification service).** Apple's cloud for delivering push
+notifications to iOS devices. Authenticated via p8 token or certificate.
+
+**App Clip.** A small (under 15 MB) slice of your app that Apple can launch
+from NFC, QR, App Clip Code, or a URL without a full install.
+
+**App Store Connect.** The dashboard where you configure listings, submit
+builds, manage TestFlight, and monitor analytics.
+
+**Apple Pay.** PassKit-based payment. `PKPaymentAuthorizationController` in
+UIKit, `PayWithApplePayButton` in SwiftUI.
+
+**ARKit.** Apple's augmented reality framework; usually paired with
+RealityKit for 3D rendering.
+
+**ARC (Automatic Reference Counting).** The memory model for Swift classes.
+No garbage collector — the compiler inserts `retain`/`release` calls at
+compile time. Strong / weak / unowned references control what keeps memory
+alive.
+
+**AsyncSequence.** Like `Sequence`, but each element is `await`-ed. The
+iteration syntax is `for await value in sequence`.
+
+**Auto Layout.** UIKit's constraint-based layout system. Still the default
+for legacy screens; SwiftUI layout is a different model.
+
+## B
+
+**BGTaskScheduler.** iOS's API for scheduling background refresh and
+processing tasks.
+
+**Binding.** In SwiftUI, a two-way connection to a value owned elsewhere —
+`$property` derives a `Binding<T>` from `@State`, `@Bindable`, etc.
+
+**Bundle identifier.** Reverse-DNS string (`com.sitharaj.app`) that
+uniquely identifies your app on a device and in App Store Connect.
+
+## C
+
+**Capability.** An Apple-platform feature you opt into via Xcode → Signing &
+Capabilities (push, iCloud, HealthKit, Keychain Sharing, etc.).
+
+**Certificate.** The file (p12/p8) that proves you own your developer
+identity when signing a build. Managed in Apple Developer.
+
+**Clean Architecture.** Layered architecture with a strict inward dependency
+rule: Presentation → Domain → Data. Apple-independent core. See the
+[Architecture Guide](/docs/architecture/overview).
+
+**CloudKit.** Apple's managed backend tied to the user's iCloud account.
+Public, private, and shared databases.
+
+**Code signing.** The cryptographic process that binds your certificate and
+provisioning profile to the final `.ipa`. Enforced by the OS at install time.
+
+**Combine.** Apple's reactive framework (`Publisher`, `Subscriber`,
+`AnyCancellable`). Still relevant, but `AsyncSequence` covers most new use
+cases.
+
+**Coordinator pattern.** A dedicated object that owns navigation decisions,
+freeing view controllers or views from navigation concerns.
+
+**Core Data.** Apple's traditional ORM. Still the right choice when you need
+complex object graphs, migrations, or CloudKit sync.
+
+**Core ML.** Apple's on-device machine learning runtime. Consumes `.mlmodel`
+files compiled into your app.
+
+## D
+
+**Dependency injection (DI).** Passing collaborators in, rather than
+constructing them inside a type. The simplest form is initializer injection.
+
+**Dynamic Type.** The system-wide accessibility setting that scales text.
+Use `Font.body`, not hard-coded point sizes.
+
+## E
+
+**Entitlement.** A plist key baked into your app that authorizes a capability
+(push, iCloud, associated domains…).
+
+**Environment.** SwiftUI's DI-like mechanism for values (`@Environment`,
+`environmentObject`, new `@Entry`).
+
+**Extension (Swift).** Adds functionality to an existing type without
+subclassing.
+
+**Extension (app).** A companion binary (Widget, Share, iMessage, Intents,
+Notification Service…) that ships alongside your main app.
+
+## F
+
+**Fastlane.** Ruby-based automation for signing, TestFlight, and App Store
+Connect uploads.
+
+**Firestore.** Firebase's real-time document database. Queries return a
+live-updating snapshot.
+
+**Future.** A Combine `Publisher` that emits a single value or fails.
+
+## G
+
+**Generic.** A type parameterised by another type — `Array<Element>`,
+`Repository<User, UUID>`.
+
+**GraphQL / Apollo.** Query language for APIs. Apollo iOS is the dominant
+Swift client.
+
+## H
+
+**HealthKit.** Apple's framework for health data. User consent is mandatory
+and fine-grained.
+
+## I
+
+**IBOutlet / IBAction.** UIKit/Storyboard bindings from Interface Builder.
+Largely obsolete in new SwiftUI code.
+
+**Info.plist.** The configuration file baked into every bundle — display
+name, permissions usage strings, supported orientations, URL schemes.
+
+**Instruments.** Apple's profiling app. Time Profiler, Allocations, Leaks,
+Network, Hangs, SwiftUI template, and more.
+
+## K
+
+**Keychain.** The secure on-device credential store. Survives app deletion
+(unless explicitly scoped).
+
+## L
+
+**Launch screen.** A minimal storyboard or SwiftUI scene shown while your app
+cold-starts. Must be static.
+
+## M
+
+**MetricKit.** Apple's production performance framework. Delivers daily
+`MXMetricPayload` reports on hangs, launches, and battery.
+
+**MVVM (Model-View-ViewModel).** The dominant SwiftUI pattern. View observes
+the ViewModel; ViewModel owns UI state and calls use cases.
+
+## N
+
+**NavigationStack.** SwiftUI's modern navigation container (iOS 16+). Drives
+a path-based navigation model suitable for deep linking.
+
+**NSFetchRequest.** The Core Data query type. Supports predicates and sort
+descriptors.
+
+## O
+
+**@Observable (Observation macro).** Replaces `ObservableObject` in iOS 17+.
+Tracks dependencies automatically — SwiftUI re-renders only what changed.
+
+**Optional.** `Optional<T>` — a type that either wraps a `T` or is `nil`.
+Swift's `nil` is type-safe and compile-time checked.
+
+## P
+
+**PassKit.** Framework for Apple Pay, digital wallet passes, and Tap to Pay.
+
+**Previews.** Xcode's live SwiftUI preview rendering. The `#Preview` macro
+replaces `PreviewProvider` in iOS 17+.
+
+**Protocol.** Swift's interface abstraction. Can have default implementations
+via extension.
+
+**Protocol-oriented programming.** Designing with protocols + value types +
+generics instead of class inheritance.
+
+**Provisioning profile.** A signed document that ties an App ID, developer
+certificate, and devices (for ad-hoc builds) together.
+
+## R
+
+**RealityKit.** Apple's high-level 3D rendering & physics engine, used for
+AR and visionOS.
+
+**Repository.** An abstraction layer over data sources. Presentation talks to
+the repository protocol; implementations can be REST, GraphQL, Core Data,
+in-memory fakes, etc.
+
+**`Result<Success, Failure>`.** A Swift enum for representing a value-or-error
+outcome. Largely superseded by `async throws` but still useful in callback
+APIs.
+
+## S
+
+**Sandbox.** iOS isolates each app in its own file-system container; apps
+read/write only their container plus the shared photo/music/contacts APIs.
+
+**Sendable.** A marker protocol that promises a type is safe to share across
+concurrency domains. Value types are auto-conforming when their members are.
+
+**SPM (Swift Package Manager).** First-party dependency manager. Native in
+Xcode. Replace CocoaPods for new projects.
+
+**StoreKit 2.** The modern, async/await-based in-app purchase and
+subscription API.
+
+**SwiftData.** `@Model`, `@Query`, `ModelContainer` — the iOS 17+ persistence
+layer. Built on Core Data under the hood.
+
+**Swift Testing.** The new macro-based testing framework (`@Test`,
+`#expect`). Replaces XCTest for new work.
+
+## T
+
+**Task.** A unit of asynchronous work. `Task { ... }` launches, `Task.detached`
+isolates from caller context.
+
+**TaskGroup.** Structured concurrency primitive for running many async
+operations and collecting their results.
+
+**TCA (The Composable Architecture).** Point-Free's opinionated
+state-management library — reducer-based, testable.
+
+**TestFlight.** Apple's beta distribution service. 10,000 external testers
+per app.
+
+## U
+
+**UIHostingController.** Wraps a SwiftUI `View` for use inside UIKit code.
+
+**UIViewController.** The long-standing unit of UIKit screen composition.
+
+**UserDefaults.** Lightweight key-value store. Fine for preferences, bad for
+anything > a few KB or sensitive.
+
+## V
+
+**Value type.** A type whose values are copied on assignment — structs and
+enums. The Swift default.
+
+**ViewModifier.** SwiftUI's composition primitive — `.padding()`, `.frame()`,
+custom modifiers via `ViewModifier`.
+
+**visionOS.** Apple's spatial-computing OS for Vision Pro. SwiftUI + RealityKit
++ ImmersiveSpace.
+
+## W
+
+**WidgetKit.** Framework for Home Screen, Lock Screen, and StandBy widgets.
+Timeline-driven.
+
+## X
+
+**XCTest.** The traditional testing framework. Still used heavily; Swift
+Testing is replacing it for new suites.
+
+**XCUITest.** UI test target. Drives actual app through accessibility APIs.
+
+## Next
+
+- [FAQ](/docs/faq) · common questions about the curriculum
+- [Architecture Guide](/docs/architecture/overview) · how to think about
+  structure end-to-end

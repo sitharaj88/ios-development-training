@@ -1,0 +1,231 @@
+---
+id: topic-2-realtime-transport
+title: Topic 2 · Real-time, Streaming & Images
+sidebar_label: 2 · Realtime & Media
+description: URLSessionWebSocketTask, server-sent events with AsyncSequence, streaming downloads, AsyncImage, and image pipelines with Kingfisher/Nuke/SDWebImage.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 06 · Topic 2 · Streams & media</span>
+  <h2>When the connection stays open</h2>
+  <div>
+    Chat, live prices, AI token streams, progress bars, and image grids all share
+    one trait: the HTTP request-response model isn't enough. This topic covers
+    WebSockets, SSE, byte streaming, and the image pipeline every list view needs.
+  </div>
+</div>
+
+## WebSockets with `URLSessionWebSocketTask`
+
+`URLSessionWebSocketTask` gives you full-duplex messaging over `ws://` or `wss://`.
+The `task.messages` property is an `AsyncSequence` — the modern way to read.
+
+```swift
+actor ChatSocket {
+    private var task: URLSessionWebSocketTask?
+
+    func connect(_ url: URL) {
+        let t = URLSession.shared.webSocketTask(with: url)
+        t.resume()
+        task = t
+        Task { await self.readLoop(t) }
+    }
+
+    func send(_ text: String) async throws {
+        try await task?.send(.string(text))
+    }
+
+    private func readLoop(_ t: URLSessionWebSocketTask) async {
+        do {
+            for try await message in t.messages {
+                switch message {
+                case .string(let s): print("text: \(s)")
+                case .data(let d):   print("data: \(d.count)B")
+                @unknown default:    break
+                }
+            }
+        } catch {
+            print("socket closed: \(error)")
+            await reconnect()
+        }
+    }
+
+    func disconnect() {
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+    }
+}
+```
+
+### Chat echo — end to end
+
+```swift
+let socket = ChatSocket()
+await socket.connect(URL(string: "wss://echo.websocket.events")!)
+try await socket.send("hello from iOS")
+// …readLoop prints: "text: hello from iOS"
+```
+
+<Callout kind="info" title="Reconnection isn't optional">
+Cell transitions, background/foreground cycles, and server rollouts all kill
+sockets silently. Every production WebSocket client needs: (1) exponential backoff
+with jitter, (2) a cap on retries (stop hammering a dead endpoint), (3) heartbeat
+pings every 20–30s to detect half-open connections, (4) buffered outgoing messages
+so the UI doesn't lose sends mid-reconnect.
+</Callout>
+
+## Server-Sent Events with `AsyncSequence`
+
+SSE is HTTP with `Content-Type: text/event-stream` — the server holds the
+connection open and writes `data: ...\n\n` events. It's simpler than WebSockets
+when you only need server → client push (AI token streams, price ticks, feed updates).
+
+```swift
+struct SSEClient {
+    func events(from url: URL) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                var req = URLRequest(url: url)
+                req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                let (bytes, response) = try await URLSession.shared.bytes(for: req)
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw URLError(.badServerResponse)
+                }
+                for try await line in bytes.lines {
+                    if line.hasPrefix("data:") {
+                        let payload = String(line.dropFirst(5))
+                            .trimmingCharacters(in: .whitespaces)
+                        continuation.yield(payload)
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+for try await token in SSEClient().events(from: aiURL) {
+    print(token)                         // streaming LLM tokens
+}
+```
+
+`bytes.lines` is an `AsyncSequence<String>` that reads the body lazily — no
+buffering the entire response.
+
+## Streaming large downloads
+
+When you need progress on a multi-GB download without loading it all in memory,
+`bytes(for:)` gives you a byte-level `AsyncSequence`:
+
+```swift
+func download(_ url: URL, to destination: URL) async throws {
+    let (bytes, response) = try await URLSession.shared.bytes(from: url)
+    guard let total = response.expectedContentLength as Int64? else {
+        throw URLError(.badServerResponse)
+    }
+    let handle = try FileHandle(forWritingTo: destination)
+    defer { try? handle.close() }
+
+    var received: Int64 = 0
+    var buffer = Data(capacity: 64 * 1024)
+    for try await byte in bytes {
+        buffer.append(byte)
+        if buffer.count >= 64 * 1024 {
+            try handle.write(contentsOf: buffer)
+            received += Int64(buffer.count)
+            buffer.removeAll(keepingCapacity: true)
+            await MainActor.run { progress = Double(received) / Double(total) }
+        }
+    }
+    if !buffer.isEmpty { try handle.write(contentsOf: buffer) }
+}
+```
+
+For most downloads you still want `download(for:)` — this pattern is for when you
+need per-chunk progress or want to process bytes as they arrive.
+
+## Images — the part every list view gets wrong
+
+A scrolling list of 1000 images hits you with three problems at once: fetch,
+decode, cache. Solving all three naively means dropped frames and thrashed RAM.
+
+### `AsyncImage` — good enough for hero images
+
+```swift
+AsyncImage(url: url) { phase in
+    switch phase {
+    case .empty:   ProgressView()
+    case .success(let image): image.resizable().scaledToFill()
+    case .failure: Image(systemName: "photo.slash")
+    @unknown default: EmptyView()
+    }
+}
+```
+
+Shortcomings: no cache across views (re-downloads on scroll back up), no
+prefetch, no downsampling. Fine for a single avatar, bad for a list.
+
+### When to reach for a library
+
+| Need | Library |
+|------|---------|
+| Disk + memory cache, SwiftUI-native | Kingfisher or Nuke |
+| Legacy UIKit apps, GIF/WebP | SDWebImage |
+| Lowest memory, most modular | Nuke |
+
+All three downsample to the view size (decoded bitmaps, not the source file) and
+prefetch ahead of scrolling. That's the actual magic — a 4MB source JPEG turns
+into a 200KB decoded bitmap sized to your 88pt thumbnail.
+
+```swift
+import Kingfisher
+
+KFImage(url)
+    .placeholder { ProgressView() }
+    .setProcessor(DownsamplingImageProcessor(size: CGSize(width: 88, height: 88)))
+    .cacheOriginalImage()
+```
+
+### Cache strategy you should enforce
+
+- **Memory cache** — size-limited in pixels (not bytes); LRU eviction.
+- **Disk cache** — size + age limited; 50–200MB depending on the app.
+- **HTTP cache** — let the server's `Cache-Control` drive revalidation; don't hand-roll it.
+- **Prefetch** — warm the next 10 rows while the current 10 are visible.
+
+## WebRTC — briefly
+
+For voice, video, or screen sharing with sub-500ms latency, WebSockets aren't
+enough — you want WebRTC (UDP-based, peer-to-peer, NAT-traversed). On iOS the
+path is [Google's WebRTC iOS framework](https://webrtc.googlesource.com/src/)
+or a hosted SDK (LiveKit, Agora, Daily). Rolling your own signalling is a
+months-long project — use a SaaS unless you must.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'Kingfisher', tagline: 'Image loading', description: 'Async image cache with SwiftUI support, downsampling, and transformations. The safe default.', url: 'https://github.com/onevcat/Kingfisher', recommended: true },
+  { name: 'Nuke', tagline: 'Image pipeline', description: 'Modular, low-overhead image loading with a composable pipeline. Pick when Kingfisher feels heavy.', url: 'https://github.com/kean/Nuke' },
+  { name: 'SDWebImage', tagline: 'Mature image cache', description: 'Original iOS image library. GIF/WebP/APNG support and still the UIKit standard.', url: 'https://github.com/SDWebImage/SDWebImage' },
+  { name: 'Starscream', tagline: 'WebSocket client', description: 'Pre-URLSessionWebSocketTask workhorse. Still useful for compression and some edge cases.', url: 'https://github.com/daltoniam/Starscream' },
+]} />
+
+## Key takeaways
+
+- **`URLSessionWebSocketTask` + `task.messages`** is the built-in full-duplex path — no library needed.
+- **SSE over `bytes.lines`** is the simplest way to stream server-pushed data.
+- **Always plan reconnection** — backoff, heartbeat, buffered sends.
+- **`AsyncImage` is fine for one-offs** — reach for Kingfisher/Nuke for lists.
+- **WebRTC is a build-vs-buy decision** — buy unless you have a reason.
+
+## Practice exercises
+
+1. Build the chat echo app against `wss://echo.websocket.events` with reconnection, 20s heartbeat, and an on-screen connection state badge.
+2. Stream an OpenAI-style `text/event-stream` response into a SwiftUI view with live token-by-token updates, cancellable via `Task.cancel()`.
+
+## Next
+
+Continue to **[Topic 3 · Auth, Resilience & GraphQL](./topic-3-auth-resilience)** — OAuth, refresh tokens, retries, and Apollo.

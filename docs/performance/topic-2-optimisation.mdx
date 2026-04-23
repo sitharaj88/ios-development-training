@@ -1,0 +1,305 @@
+---
+id: topic-2-optimisation
+title: Topic 2 · App Launch, Memory & Size
+sidebar_label: 2 · Optimisation
+description: Pre-main vs post-main launch, ARC and retain cycles, SwiftUI body cost, App Thinning and on-demand resources, and shipping MetricKit telemetry.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 10 · Topic 2 · ~2 hours</span>
+  <h2>Launch fast, stay light, ship small</h2>
+  <div>
+    Three pillars decide how your app feels on day one of an install:
+    launch time, memory pressure, and download size. This topic covers
+    the ARC mental model, SwiftUI body tuning, App Thinning, and the
+    MetricKit pipeline that tells you how real users are faring.
+  </div>
+</div>
+
+## App launch: pre-main vs post-main
+
+<ComparisonCard
+  left={{
+    label: 'Pre-main',
+    title: 'Before your code runs',
+    variant: 'neutral',
+    points: [
+      'dyld loads dynamic frameworks',
+      'Obj-C runtime fixups, +load methods, static initializers',
+      'Reduce by trimming dynamic frameworks & static initializers',
+      'Not observable from Swift — use Instruments App Launch template',
+    ],
+  }}
+  right={{
+    label: 'Post-main',
+    title: 'Your code',
+    variant: 'neutral',
+    points: [
+      'application(_:didFinishLaunchingWithOptions:) or App.init()',
+      'AppDelegate work, analytics + crash SDK boot, feature flags',
+      'Defer everything not needed for the first frame',
+      'Apple target: under 400ms on the lowest-spec supported device',
+    ],
+  }}
+/>
+
+Practical wins:
+
+<ComparisonCard
+  left={{
+    label: 'Eager init',
+    title: 'What not to do',
+    variant: 'neutral',
+    points: [
+      'All SDKs initialized in didFinishLaunching',
+      'Networking warmed up synchronously',
+      'UserDefaults migration run on main thread',
+      'Launch stalls until everything finishes',
+    ],
+  }}
+  right={{
+    label: 'Lazy / deferred init',
+    title: 'Defer past first frame',
+    variant: 'new',
+    points: [
+      'Analytics .initialize() inside Task.detached after first frame',
+      'Crash reporter first (it needs to catch early crashes)',
+      'Migrations on a background queue with a progress hook',
+      'Feature work dispatched on sceneDidBecomeActive',
+    ],
+  }}
+/>
+
+```swift
+@main
+struct ShopApp: App {
+    @UIApplicationDelegateAdaptor var delegate: AppDelegate
+    var body: some Scene {
+        WindowGroup { RootView().task { await AppBootstrap.deferred() } }
+    }
+}
+
+enum AppBootstrap {
+    static func deferred() async {
+        await Analytics.shared.start()        // 120ms — not on launch path
+        await ExperimentSDK.warmUp()          // cold JSON fetch
+        await ImageCache.preheat(top: 20)
+    }
+}
+```
+
+Measure with Instruments **App Launch** template or `os_signpost`
+intervals around each subsystem.
+
+## ARC: the decision tree
+
+ARC inserts retain/release calls at compile time. Your only knobs are
+**strong** (the default), **weak**, and **unowned**:
+
+<StepList
+  steps={[
+    { title: 'Does the referenced object own the owner?', description: 'If yes — the parent points at the child — use strong. Children outlive nothing.' },
+    { title: 'Is there mutual ownership?', description: 'Parent holds child strongly, child needs a reference back. Use weak on the back-reference (delegate, parent pointer).' },
+    { title: 'Can the weak object be nil in practice?', description: 'If yes: weak var. If no — the referenced object is guaranteed to outlive you — unowned is safe and skips the optional unwrap.' },
+    { title: 'Closures: what does the closure outlive?', description: 'If the closure can fire after self is released, use [weak self]. If it cannot (e.g. a synchronous map), no capture list is needed.' },
+  ]}
+/>
+
+```swift
+final class Player {
+    private var observer: NSObjectProtocol?
+
+    func startObserving() {
+        observer = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.restart()   // safely no-ops after dealloc
+        }
+    }
+}
+```
+
+Diagnose cycles with **Debug → View Memory Graph** in Xcode. Purple `!`
+badges mark cycles; click to see the retain chain. Leaks Instrument covers
+true leaks (unreferenced heap) — pair the two.
+
+## SwiftUI body cost
+
+Every time SwiftUI recomputes `body`, it walks your view hierarchy and diffs.
+Expensive body code multiplies by every state mutation.
+
+```swift
+// Before — a DateFormatter instantiated every body call
+struct OrderRow: View {
+    let order: Order
+    var body: some View {
+        let df = DateFormatter()          // 50µs each, ~1ms per list repaint
+        df.dateStyle = .medium
+        return Text(df.string(from: order.placedAt))
+    }
+}
+
+// After — cached formatter, stable body
+private let orderDateFormatter: DateFormatter = {
+    let df = DateFormatter(); df.dateStyle = .medium; return df
+}()
+
+struct OrderRow: View {
+    let order: Order
+    var body: some View {
+        Text(orderDateFormatter.string(from: order.placedAt))
+    }
+}
+```
+
+Further tools:
+
+- `@State` with small value types, not reference types — SwiftUI can diff them.
+- `EquatableView` when you can define equality yourself and skip recompute.
+- `.drawingGroup()` for complex shape/gradient compositions — rasterizes to Metal.
+- `LazyVStack` / `LazyHStack` / `List` for any collection > ~20 items — they
+  only build views for what's on-screen.
+- Don't put expensive calls in `body` — compute once into state.
+
+Confirm wins in the Instruments **SwiftUI** template: body recompute count
+should drop after each change.
+
+## Images: the easiest big win
+
+<Callout kind="tip" title="Images are usually the biggest easy win">
+A single 3000x3000 JPEG decoded into a 100pt thumbnail wastes ~36 MB of RAM
+and tens of ms of CPU per row. Downsample at load time and store prepared
+sizes in your asset catalog. Most "this list is laggy" reports come down to
+oversized images.
+</Callout>
+
+```swift
+import ImageIO
+
+func downsample(url: URL, to pointSize: CGSize, scale: CGFloat) -> UIImage? {
+    let opts: [CFString: Any] = [kCGImageSourceShouldCache: false]
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, opts as CFDictionary)
+    else { return nil }
+
+    let maxPixels = max(pointSize.width, pointSize.height) * scale
+    let thumbOpts: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixels,
+        kCGImageSourceShouldCacheImmediately: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(src, 0, thumbOpts as CFDictionary)
+        .map { UIImage(cgImage: $0) }
+}
+```
+
+## App Thinning & on-demand resources
+
+Every install should only download what a given device needs:
+
+- **Asset catalog slicing** — the store delivers only the @2x/@3x, the right
+  color gamut, and the right device family. Requires assets to live in `.xcassets`.
+- **Bitcode** is deprecated as of Xcode 14 — no action needed; remove any
+  explicit `ENABLE_BITCODE = YES` in old Xcconfigs.
+- **On-demand resources (ODR)** — tag large bundles of assets (tutorial
+  videos, level packs, high-res textures) and request them at runtime:
+
+```swift
+let request = NSBundleResourceRequest(tags: ["tutorial.chapter3"])
+request.loadingPriority = NSBundleResourceRequestLoadingPriorityUrgent
+try await request.beginAccessingResources()
+defer { request.endAccessingResources() }
+// safe to load resources tagged "tutorial.chapter3"
+```
+
+Inspect the final slices in App Store Connect under **App Store → App
+Thinning Size Report** — it shows each device's download and install size.
+
+## MetricKit: real-user data, Apple-aggregated
+
+MetricKit is on-device aggregation of launch, memory, CPU, hang, and disk
+metrics. Payloads arrive roughly once per day, already privacy-respecting.
+
+```swift
+import MetricKit
+
+final class MetricsSubscriber: NSObject, MXMetricManagerSubscriber {
+    static let shared = MetricsSubscriber()
+
+    func start() {
+        MXMetricManager.shared.add(self)
+    }
+
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        for payload in payloads {
+            let hangs = payload.applicationResponsivenessMetrics?
+                .histogrammedApplicationHangTime
+            let launch = payload.applicationLaunchMetrics?
+                .histogrammedTimeToFirstDraw
+            Telemetry.upload(
+                name: "metrickit.daily",
+                json: payload.jsonRepresentation()
+            )
+        }
+    }
+
+    func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        for payload in payloads {
+            for hang in payload.hangDiagnostics ?? [] {
+                Telemetry.upload(
+                    name: "metrickit.hang",
+                    json: hang.jsonRepresentation()
+                )
+            }
+            for crash in payload.crashDiagnostics ?? [] {
+                Telemetry.upload(
+                    name: "metrickit.crash",
+                    json: crash.jsonRepresentation()
+                )
+            }
+        }
+    }
+}
+
+// Wire it once, ideally from your AppDelegate:
+func application(_ app: UIApplication,
+                 didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil
+) -> Bool {
+    MetricsSubscriber.shared.start()
+    return true
+}
+```
+
+Build a dashboard on p50/p95 launch time, hang rate (time > 250ms divided by
+foreground time), and memory warnings per session. Those are the three
+metrics that correlate most with user-visible quality.
+
+## Battery & thermal impact checklist
+
+- No timers firing in the background; pause `AVPlayer` / `CMMotionManager`
+  when leaving foreground.
+- Location: use the appropriate accuracy (`kCLLocationAccuracyHundredMeters`
+  beats `kCLLocationAccuracyBest` ~10x for energy).
+- Network: coalesce requests with `URLSession` background configuration for
+  non-urgent uploads; avoid polling — use push or silent push.
+- CPU: watch `ProcessInfo.thermalState`; degrade gracefully (pause video
+  effects, lower frame rate) at `.serious` or higher.
+- Verify on a device with the Instruments **Energy Log** template.
+
+## Exercises
+
+1. Profile your sample app's cold launch on a real device. Identify two
+   pieces of `didFinishLaunching` work you can defer, move them into a
+   `Task.detached` after first frame, and shave at least 100ms off
+   `MXAppLaunchMetric.histogrammedTimeToFirstDraw`.
+2. Wire `MetricsSubscriber` and route `MXHangDiagnostic` payloads to your
+   analytics backend. Add a CI assertion that parses a fixture MetricKit
+   payload and verifies your uploader shape so the pipeline cannot silently
+   break.
+
+## Next module
+
+Continue to **[Module 11 · App Store Connect & Publishing](/docs/publishing/overview)** — ship the binary to users.

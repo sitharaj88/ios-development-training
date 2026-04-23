@@ -1,0 +1,208 @@
+---
+id: topic-1-signing-testflight
+title: Topic 1 · Certificates, Provisioning & TestFlight
+sidebar_label: 1 · Signing & TestFlight
+description: Demystify Apple's signing trinity — certificates, App IDs, provisioning profiles — and ship a build to TestFlight without the Keychain horror stories.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 11 · Topic 1 · 45 min</span>
+  <h2>Signing is a process, not a mystery</h2>
+  <div>
+    Every "code signing failed" error is just a mismatch between four things:
+    a certificate, an App ID, a provisioning profile, and the entitlements in
+    your target. Understand the pieces and you'll never fear the red build
+    errors again.
+  </div>
+</div>
+
+## Why signing exists at all
+
+Every binary that runs on an iOS device is cryptographically signed by a
+developer whose identity Apple has verified. That signature is what lets iOS
+grant entitlements (Push, HealthKit, iCloud) and what lets the App Store attest
+that the code you shipped is the code users downloaded. Without signing, the
+iOS security model collapses.
+
+The four artefacts you need to understand:
+
+- **Apple Developer Program membership** — the legal contract.
+- **Certificate** — the public/private keypair that proves *this machine signed the build*.
+- **App ID** — the bundle-identifier-shaped entry that declares *which app* and *which capabilities*.
+- **Provisioning profile** — the glue that says *this certificate can sign this App ID for these devices*.
+
+## Enrolling in the Apple Developer Program
+
+<ComparisonCard
+  left={{
+    label: 'Individual',
+    title: '$99/year',
+    variant: 'neutral',
+    points: [
+      'Fast — approved in hours, usually',
+      'Apps ship under your personal name',
+      'No team roles, no App Store Connect user management',
+      'Fine for indies, bad for anyone who might hire someone',
+    ],
+  }}
+  right={{
+    label: 'Organization',
+    title: '$99/year + D-U-N-S',
+    variant: 'neutral',
+    points: [
+      'Requires D-U-N-S number (free, ~2 weeks to obtain)',
+      'Apps ship under the legal company name',
+      'Invite team members with specific roles (Admin, Developer, Marketer)',
+      'Only option that unlocks Enterprise distribution ($299/year, separate program)',
+    ],
+  }}
+/>
+
+If you plan to work with *anyone else ever*, enrol as an organization from day
+one. Migrating an individual account's apps into an org account is possible
+but slow and paperwork-heavy.
+
+## The signing trinity — in detail
+
+### Certificate
+
+A keypair stored in your Keychain. The private key signs; the public key is
+uploaded to Apple. There are two categories:
+
+- **Apple Development** — for running on real test devices.
+- **Apple Distribution** — for App Store, Ad Hoc, and Enterprise builds.
+
+Lose the private key and *no machine can produce an equivalent certificate* — Apple
+cannot recover it. This is why teams use Fastlane `match` to store the keypair
+encrypted in a private Git repo.
+
+### App ID
+
+Either **explicit** (`com.yourco.YourApp`) or **wildcard** (`com.yourco.*`). Only
+explicit App IDs can use capabilities that need push tokens or app-specific
+entitlements (Push Notifications, iCloud, Associated Domains, App Groups, Sign
+in with Apple). Use explicit for anything real.
+
+### Provisioning profile
+
+A signed blob that says: *"These certificates are allowed to sign this App ID
+and install on these devices, with these entitlements."* Three kinds:
+
+- **Development** — lists allowed device UDIDs; expires in 12 months.
+- **Ad Hoc** — lists allowed device UDIDs; for enterprise-distributed builds outside MDM.
+- **App Store** — no device list; for upload to App Store Connect.
+
+## Automatic vs Manual signing
+
+<ComparisonCard
+  left={{
+    label: 'Automatic',
+    title: 'Xcode manages everything',
+    variant: 'new',
+    points: [
+      'Xcode creates certificates and profiles on demand',
+      'Perfect for solo developers and quick prototypes',
+      'Adds devices to the dev profile when you plug them in',
+      'Breaks down with shared CI runners and multiple signing identities',
+    ],
+  }}
+  right={{
+    label: 'Manual',
+    title: 'You own the identities',
+    variant: 'old',
+    points: [
+      'Explicit certificate + profile per scheme / configuration',
+      'Required for App Store Connect API uploads from CI',
+      'Pair with Fastlane match for team sync',
+      'More setup up front; zero surprises downstream',
+    ],
+  }}
+/>
+
+Rule of thumb: **Automatic for local Debug, Manual for Release and CI.** Your
+`Release` build configuration should point at a specific distribution profile
+by name, not "Xcode managed profile".
+
+## App Store Connect API keys (.p8)
+
+For any automation — Fastlane, Xcode Cloud, GitHub Actions — you need an API
+key instead of your Apple ID password (which would require 2FA on every run).
+
+```text
+App Store Connect → Users and Access → Integrations → Keys
+  → Generate API Key
+  → Role: App Manager (or Developer for test-only access)
+  → Download the .p8 ONCE — Apple never shows it again
+```
+
+You'll end up with three values: `KEY_ID`, `ISSUER_ID`, and the `.p8` file
+contents. Store them in your CI's secret store, never in Git.
+
+<Callout kind="warning" title="Never email .p12 files, never paste .p8 files in Slack">
+A `.p12` export contains your distribution certificate's **private key**. Someone
+with that file can ship malware under your company's name. A `.p8` App Store
+Connect key can upload builds and manage users. Treat both like production
+database passwords — encrypted Git repos (Fastlane match) or a real secrets
+manager (1Password, AWS Secrets Manager), never chat or email.
+</Callout>
+
+## Archive → Distribute flow
+
+```text
+Product → Archive (requires a "Any iOS Device" destination, not a simulator)
+  → Organizer opens
+  → Distribute App
+    → App Store Connect   (production upload)
+    → TestFlight Internal Only (faster path for pre-release testing)
+    → Ad Hoc              (signed IPA for specific UDIDs)
+    → Enterprise          (in-house distribution)
+    → Development         (local install on a registered device)
+```
+
+The Organizer stores every archive locally — keep at least one per released
+version so you can symbolicate crash reports long after the fact.
+
+## TestFlight: internal vs external
+
+- **Internal testing** — up to 100 team members (users in App Store Connect). No
+  Apple review. Builds appear in TestFlight within minutes of processing.
+- **External testing** — up to 10,000 testers via email invite or a public link.
+  First build of each version goes through **Beta App Review** (usually under 24
+  hours, sometimes minutes). Subsequent builds of the same version ship without
+  re-review.
+
+Build expires after **90 days**. Plan your beta cadence accordingly.
+
+<StepList
+  steps={[
+    { title: '1. Bump build number', description: 'CFBundleVersion (build) must strictly increase for every upload. Version (CFBundleShortVersionString) only needs to change per release.' },
+    { title: '2. Archive with Release config', description: 'Ensure scheme\'s Archive action uses Release. Check that bitcode / dSYM settings match your crash reporter.' },
+    { title: '3. Validate before upload', description: 'Organizer → Validate App catches missing entitlements, oversized assets, and expired profiles before the 10-minute upload.' },
+    { title: '4. Upload via App Store Connect or Transporter', description: 'Organizer uploads work; for CI, use xcodebuild -exportArchive + xcrun altool --upload-app or Fastlane pilot.' },
+    { title: '5. Wait for processing + export compliance', description: 'Build flips from Processing → Ready to Test. Answer the encryption export compliance questions (once per build unless you add encryption).' },
+    { title: '6. Add testers', description: 'Internal first (no review). Add an external group only when the build is worth strangers\' time — every rejection costs a day.' },
+    { title: '7. Collect feedback via the TestFlight app', description: 'Screenshots and comments flow into App Store Connect, attached to the exact build. Triage weekly.' },
+  ]}
+/>
+
+## "Code signing failed" — the debugging flowchart
+
+1. Does the bundle identifier in the target **exactly** match the App ID in the profile? (Case-sensitive.)
+2. Is the profile **expired**? (Dev profiles: 12 months. Certificates: 12 months for dev, 12 months for distribution, 3 years for Apple Push.)
+3. Does the profile include the certificate you're trying to sign with? (Re-download after regenerating a cert.)
+4. Do the target's **entitlements** match the capabilities the App ID has enabled? (Adding Push in Xcode but not in the portal = failure.)
+5. For CI: is the correct `.p12` + profile installed in the Keychain *before* `xcodebuild` runs?
+6. For Automatic signing: is Xcode signed in with an Apple ID that belongs to the correct Team?
+
+Ninety-nine percent of signing errors are one of these six.
+
+## Exercises
+
+1. **Manual-signing a fresh app.** Create a new app, disable Automatic signing, manually create a Development certificate and provisioning profile in the Developer portal, and install them. Archive and export an Ad Hoc IPA to your device.
+2. **TestFlight CI upload.** Using an App Store Connect API key, upload a TestFlight build from the command line (`xcodebuild -exportArchive` + `xcrun altool --upload-app`) without opening Xcode Organizer.
+
+## Next
+
+Continue to **[Topic 2 · StoreKit 2, IAPs & ASO](/docs/publishing/topic-2-storekit-aso)** — how to charge money and get found on the store.

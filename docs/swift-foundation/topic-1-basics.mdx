@@ -1,0 +1,370 @@
+---
+id: topic-1-basics
+title: "Topic 1 · Swift Basics"
+sidebar_label: "1 · Basics"
+description: Swift fundamentals — let vs var, type inference, strings, collections, control flow, functions, and closures — enough to write real code.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 1 · Swift Basics · ~90 min</span>
+  <h2>The primitives you'll use in every line of Swift you write</h2>
+  <div>
+    Before optionals, protocols, or concurrency, you need fluency in the basic
+    shape of Swift — constants, types, collections, control flow, and functions.
+    Nail this and the rest of the language stops feeling foreign.
+  </div>
+</div>
+
+## What this topic covers
+
+<StepList
+  steps={[
+    { title: 'Constants & variables', description: 'let vs var, the immutability-by-default rule, and why it matters.' },
+    { title: 'Types & inference', description: 'Primitive types, annotations, and how the compiler reads your mind.' },
+    { title: 'Strings & collections', description: 'Unicode strings, arrays, dictionaries, sets, tuples, ranges.' },
+    { title: 'Control flow', description: 'if / guard, switch pattern matching, for-in with where, while.' },
+    { title: 'Functions & closures', description: 'Argument labels, defaults, variadics, inout, and trailing closures.' },
+  ]}
+/>
+
+## `let` vs `var` — immutability is the default
+
+Swift forces you to declare intent. Use `let` for values that never change after
+assignment, `var` only when mutation is necessary.
+
+```swift
+let pi = 3.14159          // constant, cannot reassign
+var score = 0             // variable, can change
+score += 10               // fine
+// pi = 3.14              // compile error
+```
+
+This isn't style — the compiler uses it. `let` enables optimizations, makes
+concurrency safer, and documents intent better than any comment.
+
+<Callout kind="warning" title="Default to let, reach for var only when needed">
+If you find yourself typing <code>var</code> reflexively, stop. Start with
+<code>let</code> and let the compiler tell you when mutation is actually
+required. Overusing <code>var</code> hides state changes and makes code harder
+to reason about — especially across concurrency boundaries.
+</Callout>
+
+## Type inference (and when to be explicit)
+
+Swift infers types from initial values. You rarely need to annotate.
+
+```swift
+let name = "Ada"          // String
+let age  = 36             // Int
+let pi   = 3.14           // Double
+let ok   = true           // Bool
+```
+
+Annotate when the inferred type is wrong, ambiguous, or when the variable has
+no initial value:
+
+```swift
+let bytes: UInt8 = 255
+let items: [String] = []
+var cached: Data?         // inferred would be impossible — no value yet
+```
+
+<ComparisonCard
+  left={{
+    label: 'Inferred',
+    title: 'Let the compiler decide',
+    variant: 'new',
+    points: [
+      'Less visual noise',
+      'Reads like prose',
+      'Refactor-friendly — types track the RHS',
+      'Idiomatic for local variables',
+    ],
+  }}
+  right={{
+    label: 'Explicit',
+    title: 'Annotate when it helps',
+    variant: 'neutral',
+    points: [
+      'Required for public API signatures',
+      'Needed when inferred type is wrong (Int vs UInt8)',
+      'Useful for empty collections',
+      'Documents intent in complex generic code',
+    ],
+  }}
+/>
+
+## Primitive types
+
+`Int`, `Double`, `Float`, `Bool`, `String`, `Character`. `Int` is 64-bit on
+modern devices. Use `Double` for floating-point — `Float` is half the precision
+and only worth it for GPU-adjacent code.
+
+```swift
+let big: Int64 = 9_000_000_000
+let small: UInt8 = 200
+let hex = 0xFF
+let bin = 0b1010
+let exp = 1.5e3           // 1500.0
+```
+
+Numeric literals allow underscores for readability. Conversions are always
+explicit — Swift refuses to silently widen:
+
+```swift
+let n: Int = 10
+let d: Double = Double(n) + 0.5   // explicit — no implicit coercion
+```
+
+## Strings — Unicode-correct by default
+
+Swift `String` is a collection of `Character`s, and each `Character` is a full
+Unicode grapheme cluster. Emoji and combining marks count as one character.
+
+```swift
+let greeting = "Hello, 🌍"
+print(greeting.count)     // 8, not some surrogate-pair nonsense
+```
+
+### Interpolation and multiline
+
+```swift
+let user = "Ada"
+let score = 42
+let line = "User \(user) scored \(score) points."
+
+let sql = """
+SELECT id, name
+FROM users
+WHERE active = true
+"""
+```
+
+Multiline strings strip the common leading whitespace based on the closing
+`"""` indentation — so you can indent the block to match surrounding code
+without leaking spaces into the value.
+
+## Collections
+
+### Array — ordered, indexed
+
+```swift
+var scores = [88, 92, 79]
+scores.append(100)
+scores[0] = 90
+let total = scores.reduce(0, +)   // 361
+```
+
+### Dictionary — keyed lookup
+
+```swift
+var capitals = ["France": "Paris", "Japan": "Tokyo"]
+capitals["Germany"] = "Berlin"
+let paris = capitals["France"]    // Optional("Paris")
+```
+
+Dictionary lookups always return an `Optional` — the key might not exist. That
+nil-awareness is the type system keeping you honest (more in Topic 3).
+
+### Set — unordered, unique
+
+```swift
+let primes: Set = [2, 3, 5, 7, 11]
+primes.contains(7)        // true — O(1)
+```
+
+### Tuples — quick grouping without a type
+
+```swift
+let origin = (x: 0, y: 0)
+print(origin.x)
+
+func minMax(_ xs: [Int]) -> (min: Int, max: Int)? {
+    guard let first = xs.first else { return nil }
+    return xs.reduce((first, first)) { (min($0.0, $1), max($0.1, $1)) }
+}
+```
+
+Reach for a `struct` once a tuple starts appearing in more than one place.
+
+### Ranges
+
+```swift
+for i in 0..<5 { print(i) }       // 0,1,2,3,4   half-open
+for i in 0...5 { print(i) }       // 0,1,2,3,4,5 closed
+let letters = "a"..."z"
+```
+
+## Control flow
+
+### `if` / `else` / `guard`
+
+```swift
+if score >= 90 {
+    print("A")
+} else if score >= 80 {
+    print("B")
+} else {
+    print("C or below")
+}
+
+func greet(_ name: String?) {
+    guard let name, !name.isEmpty else { return }
+    print("Hi, \(name)")
+}
+```
+
+`guard` flips the happy-path check — the `else` branch must exit (return,
+throw, continue, break, or fatalError). It keeps the rest of the function
+de-nested.
+
+### `switch` with pattern matching
+
+```swift
+enum Shape { case circle(r: Double), rect(w: Double, h: Double) }
+
+func area(_ s: Shape) -> Double {
+    switch s {
+    case .circle(let r):           .pi * r * r
+    case let .rect(w, h):          w * h
+    }
+}
+
+let point = (3, 0)
+switch point {
+case (0, 0):              print("origin")
+case (_, 0):              print("on x-axis")
+case (let x, let y) where x == y: print("diagonal")
+default:                  print("somewhere else")
+}
+```
+
+Swift's `switch` must be exhaustive — the compiler enforces it. Use it freely
+for enum dispatch; it's faster and safer than chains of `if let case`.
+
+### `for-in` with `where`
+
+```swift
+for score in scores where score >= 80 {
+    print("High: \(score)")
+}
+```
+
+### `while` / `repeat-while`
+
+```swift
+var n = 10
+while n > 0 { n -= 1 }
+
+repeat {
+    n += 1
+} while n < 5
+```
+
+## Functions
+
+```swift
+func greet(_ name: String, with salutation: String = "Hello") -> String {
+    "\(salutation), \(name)"
+}
+
+greet("Ada")                      // "Hello, Ada"
+greet("Ada", with: "Howdy")       // "Howdy, Ada"
+```
+
+- First parameter's label is suppressed with `_`; otherwise argument labels are
+  required at call sites.
+- Default values make call sites shorter without overloads.
+- Return values can be omitted on single-expression functions (no `return`
+  keyword needed on one-liners).
+
+### Variadic parameters
+
+```swift
+func sum(_ xs: Int...) -> Int { xs.reduce(0, +) }
+sum(1, 2, 3, 4)                   // 10
+```
+
+### `inout` — mutate the caller's value
+
+```swift
+func swap<T>(_ a: inout T, _ b: inout T) {
+    let tmp = a; a = b; b = tmp
+}
+var x = 1, y = 2
+swap(&x, &y)
+```
+
+`inout` is for rare cases — prefer returning a new value or using a reference
+type when in/out patterns become common.
+
+## Closures
+
+Closures are anonymous functions. Swift has a progression of syntactic sugar
+so common closures read like blocks.
+
+```swift
+let nums = [3, 1, 4, 1, 5, 9]
+
+// full form
+let sorted1 = nums.sorted(by: { (a: Int, b: Int) -> Bool in a < b })
+
+// inferred types
+let sorted2 = nums.sorted(by: { a, b in a < b })
+
+// shorthand argument names
+let sorted3 = nums.sorted(by: { $0 < $1 })
+
+// operator as function
+let sorted4 = nums.sorted(by: <)
+
+// trailing closure when it's the last argument
+let doubled = nums.map { $0 * 2 }
+```
+
+Trailing closure syntax is why SwiftUI and async APIs read naturally:
+
+```swift
+Button("Save") {
+    save()
+}
+```
+
+We'll cover **capture lists** (`[weak self]`) deeply in Topic 2 when we hit
+retain cycles. For now, remember closures capture surrounding variables by
+reference by default.
+
+## Type aliases
+
+```swift
+typealias UserID = UUID
+typealias JSON   = [String: Any]
+
+func find(_ id: UserID) -> User? { /* ... */ return nil }
+```
+
+Use aliases to name an intent, not to shorten a type. `Handler` is not a good
+alias; `CompletionHandler<Data>` might be.
+
+## Key takeaways
+
+- Prefer `let`. Reach for `var` only when mutation is required.
+- Let Swift infer types locally; annotate at API boundaries.
+- `String` is Unicode-aware; `count` returns graphemes, not UTF-16 units.
+- `switch` is exhaustive and the preferred enum dispatch.
+- Trailing closures are the reason SwiftUI reads like a DSL.
+
+## Practice exercises
+
+1. Write `func wordCount(_ text: String) -> [String: Int]` that returns a
+   frequency map, lowercased, ignoring punctuation.
+2. Given `let xs = [1, 2, 3, 4, 5, 6]`, use `filter`, `map`, and `reduce`
+   (no explicit loops) to compute the sum of squares of even numbers.
+3. Define an `enum HTTPMethod` with cases `get`, `post(body: Data)`,
+   `delete`. Write a `switch` that prints a human description of each.
+
+## Next
+
+Continue to **[Topic 2 · Structs, Classes & Value Semantics](/docs/swift-foundation/topic-2-oop-value-types)** — where the single most important mental model in Swift lives.

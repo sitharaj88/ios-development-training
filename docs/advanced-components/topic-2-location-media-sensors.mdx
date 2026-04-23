@@ -1,0 +1,318 @@
+---
+id: topic-2-location-media-sensors
+title: Topic 2 · Location, Maps, Camera & Audio
+sidebar_label: 2 · Location, Maps & Media
+description: Core Location, MapKit, PhotosPicker, AVCaptureSession, AVAudioEngine, and CoreMotion — sensors are a privacy contract, not a free API.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 2 · Week 2 · Sensors & media</span>
+  <h2>Real hardware, real privacy</h2>
+  <div>
+    Every sensor on an iPhone — GPS, camera, microphone, motion — is behind a
+    permission prompt and an <code>Info.plist</code> string. Get the strings
+    right, handle every authorization state, and respect the privacy contract.
+  </div>
+</div>
+
+## The permissions ladder
+
+<Callout type="warning" title="The app dies if Info.plist strings are missing">
+  Every sensor API requires a usage description in <code>Info.plist</code>:
+  <code>NSLocationWhenInUseUsageDescription</code>,
+  <code>NSLocationAlwaysAndWhenInUseUsageDescription</code>,
+  <code>NSCameraUsageDescription</code>,
+  <code>NSMicrophoneUsageDescription</code>,
+  <code>NSMotionUsageDescription</code>, etc. If the key is missing and you
+  call the API, iOS terminates your process instantly with an
+  <code>NSInvalidArgumentException</code>. Review <em>before</em> you submit —
+  the App Store review team does.
+</Callout>
+
+<StepList
+  steps={[
+    { title: 'notDetermined', description: 'The default. The user has never been asked. You may call requestWhenInUseAuthorization() or requestAlwaysAuthorization() exactly once — iOS will not show the prompt twice.' },
+    { title: 'denied / restricted', description: 'The user said no, or a parental control blocks access. Do not beg. Show a Settings deep link (UIApplication.openSettingsURLString) and graceful fallback UI.' },
+    { title: 'authorizedWhenInUse', description: 'Location access only while your app is in the foreground. Good enough for most apps.' },
+    { title: 'authorizedAlways', description: 'Background + foreground. Required for geofencing, visit monitoring, and significant-location-change. You must justify this on the App Store listing.' },
+    { title: 'Precise vs approximate', description: 'iOS 14+ lets the user grant "approximate" location (~few km accuracy). Check CLLocationManager.accuracyAuthorization and degrade gracefully.' },
+  ]}
+/>
+
+## Core Location — the authorization state machine
+
+```swift
+import CoreLocation
+
+final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private let manager = CLLocationManager()
+    @Published var authorization: CLAuthorizationStatus = .notDetermined
+    @Published var location: CLLocation?
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        authorization = manager.authorizationStatus
+    }
+
+    func request() {
+        switch authorization {
+        case .notDetermined: manager.requestWhenInUseAuthorization()
+        case .denied, .restricted: openSettings()
+        case .authorizedWhenInUse, .authorizedAlways: manager.startUpdatingLocation()
+        @unknown default: break
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorization = manager.authorizationStatus
+        if authorization == .authorizedWhenInUse || authorization == .authorizedAlways {
+            manager.startUpdatingLocation()
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager,
+                         didUpdateLocations locations: [CLLocation]) {
+        location = locations.last
+    }
+
+    private func openSettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+        UIApplication.shared.open(url)
+    }
+}
+```
+
+Always treat `locationManagerDidChangeAuthorization` as the source of truth —
+the user can change their mind in Settings while your app is running.
+
+### Region and visit monitoring
+
+For "wake me when the user enters this geofence" use
+`CLCircularRegion` + `startMonitoring(for:)`. For "wake me when the user
+arrives somewhere meaningful" use `startMonitoringVisits()` — iOS decides
+what counts as a visit and is far more battery-friendly than continuous
+location updates. Both require `authorizedAlways`.
+
+## Maps — iOS 17 SwiftUI `Map`
+
+The iOS 17 `Map` initializer is position-driven, supports content builders,
+and composes with SwiftUI state.
+
+```swift
+import SwiftUI
+import MapKit
+
+struct StoresMap: View {
+    @State private var position: MapCameraPosition = .region(
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090),
+            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        )
+    )
+    let stores: [Store]
+
+    var body: some View {
+        Map(position: $position) {
+            UserAnnotation()
+            ForEach(stores) { store in
+                Marker(store.name, systemImage: "cart.fill",
+                       coordinate: store.coordinate)
+                    .tint(.indigo)
+            }
+            if let route = RouteCache.shared.latest {
+                MapPolyline(route).stroke(.blue, lineWidth: 4)
+            }
+        }
+        .mapStyle(.standard(elevation: .realistic))
+        .mapControls {
+            MapCompass()
+            MapUserLocationButton()
+            MapScaleView()
+        }
+    }
+}
+```
+
+For custom annotation views, use the `Annotation(_:coordinate:content:)`
+initializer instead of `Marker` and return any SwiftUI view.
+
+## PhotosPicker — the privacy-forward way to pick photos
+
+Before iOS 14, you asked for photo library permission and got everything.
+`PhotosPicker` (iOS 16+) is out-of-process: the user picks, you receive the
+selected items, and you never need `NSPhotoLibraryUsageDescription` at all.
+
+```swift
+import PhotosUI
+import SwiftUI
+
+struct Upload: View {
+    @State private var selection: [PhotosPickerItem] = []
+    @State private var images: [Image] = []
+
+    var body: some View {
+        VStack {
+            PhotosPicker(selection: $selection, maxSelectionCount: 5,
+                         matching: .images) {
+                Label("Choose photos", systemImage: "photo.on.rectangle")
+            }
+            ScrollView(.horizontal) {
+                HStack { ForEach(0..<images.count, id: \.self) { images[$0].resizable().scaledToFill().frame(width: 120, height: 120) } }
+            }
+        }
+        .onChange(of: selection) { _, items in
+            Task {
+                images = []
+                for item in items {
+                    if let data = try? await item.loadTransferable(type: Data.self),
+                       let ui = UIImage(data: data) {
+                        images.append(Image(uiImage: ui))
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+If you truly need the whole library (editor apps, backup tools), then use
+`PHPhotoLibrary` with the `NSPhotoLibraryUsageDescription` string. Most apps
+don't need that.
+
+## AVCaptureSession — the custom camera
+
+`UIImagePickerController` is fine for snapshots. For anything serious — QR
+scanning, barcode reading, document capture — you want AVFoundation.
+
+```swift
+import AVFoundation
+
+final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    let session = AVCaptureSession()
+    private let output = AVCaptureVideoDataOutput()
+    private let queue = DispatchQueue(label: "camera.frames")
+
+    func start() async throws {
+        guard await AVCaptureDevice.requestAccess(for: .video) else {
+            throw CameraError.denied
+        }
+        session.beginConfiguration()
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera,
+                                                   for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            throw CameraError.noDevice
+        }
+        session.addInput(input)
+        output.setSampleBufferDelegate(self, queue: queue)
+        session.addOutput(output)
+        session.commitConfiguration()
+
+        Task.detached { self.session.startRunning() }
+    }
+}
+
+enum CameraError: Error { case denied, noDevice }
+```
+
+Wrap the `AVCaptureVideoPreviewLayer` in a `UIViewRepresentable` to embed in
+SwiftUI. Never call `startRunning()` on the main queue — it blocks.
+
+## AVAudioEngine — record, process, play
+
+AVAudioEngine is the graph-based API: you attach nodes, connect them, and
+install taps to capture PCM buffers.
+
+```swift
+import AVFoundation
+
+final class Recorder {
+    private let engine = AVAudioEngine()
+    private var file: AVAudioFile?
+
+    func start() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+        try session.setActive(true)
+
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recording.caf")
+        file = try AVAudioFile(forWriting: url, settings: format.settings)
+
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            try? self?.file?.write(from: buffer)
+        }
+        try engine.start()
+    }
+
+    func stop() {
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+    }
+}
+```
+
+For playback, attach an `AVAudioPlayerNode` to the engine, schedule a file
+or buffer, and call `play()`.
+
+## CoreMotion — accelerometer, gyro, pedometer
+
+```swift
+import CoreMotion
+
+let motion = CMMotionManager()
+motion.deviceMotionUpdateInterval = 1.0 / 60.0
+motion.startDeviceMotionUpdates(to: .main) { data, _ in
+    guard let d = data else { return }
+    // d.attitude.roll / pitch / yaw, d.userAcceleration, d.rotationRate
+}
+```
+
+`CMPedometer` requires `NSMotionUsageDescription` and gives you step counts
+and distance without GPS — great for fitness and parallax effects.
+
+## HapticFeedback — cheap polish
+
+```swift
+import UIKit
+
+let impact = UIImpactFeedbackGenerator(style: .medium)
+impact.prepare()
+impact.impactOccurred()
+
+let notif = UINotificationFeedbackGenerator()
+notif.notificationOccurred(.success)
+```
+
+For SwiftUI, use `.sensoryFeedback(.success, trigger: value)` on iOS 17+.
+For custom patterns, reach for `CoreHaptics` (`CHHapticEngine`).
+
+## Recommended reading
+
+<LibraryGrid libraries={[
+  { name: 'Core Location', tagline: 'GPS, regions, visits', description: 'Authorization state machine, region monitoring, visit monitoring, significant-change service.', url: 'https://developer.apple.com/documentation/corelocation', recommended: true },
+  { name: 'MapKit', tagline: 'Maps + annotations', description: 'SwiftUI Map, MKMapView, MKLocalSearch, look-around, camera positions.', url: 'https://developer.apple.com/documentation/mapkit' },
+  { name: 'AVFoundation', tagline: 'Capture + playback', description: 'AVCaptureSession, AVAudioEngine, AVPlayer — everything media.', url: 'https://developer.apple.com/documentation/avfoundation' },
+  { name: 'PhotoKit', tagline: 'Photo library access', description: 'PhotosPicker for the privacy path; PHPhotoLibrary for full library tools.', url: 'https://developer.apple.com/documentation/photokit' },
+]} />
+
+## Exercises
+
+1. Build a SwiftUI view that shows the user's current location on a `Map`,
+   drops a marker at every significant visit for the past 24 hours, and
+   handles every authorization state (including `denied`) with a useful UI.
+2. Record a 10-second audio clip with `AVAudioEngine`, save it to
+   `Documents/`, and then play it back through `AVAudioPlayerNode`. Ensure
+   the `AVAudioSession` category switches correctly between record and
+   playback without clicks.
+
+## Next
+
+Continue to **[Topic 3 · Widgets, App Clips & Bluetooth](/docs/advanced-components/topic-3-widgets-clips-bluetooth)**
+to learn the surfaces that live outside your app icon.

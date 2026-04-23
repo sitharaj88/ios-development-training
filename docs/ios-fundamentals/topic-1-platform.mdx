@@ -1,0 +1,250 @@
+---
+id: topic-1-platform
+title: "Topic 1 · iOS Platform & Architecture"
+sidebar_label: "1 · Platform"
+description: The iOS layer stack, app sandbox, bundle format, ATS, entitlements, and simulator vs device — the runtime model every iOS app lives inside.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 02 · Topic 1 · ~2 hours</span>
+  <h2>The runtime model your app lives inside</h2>
+  <div>
+    Before writing a line of UIKit or SwiftUI, understand the layers iOS
+    exposes, where your app is allowed to write files, what an <code>.app</code>
+    bundle actually is, and why an entitlement is not just a checkbox.
+  </div>
+</div>
+
+## Why this matters first
+
+Every crash you'll debug, every permission dialog you'll design around, every
+"why doesn't my app work on device but works in the simulator" moment traces
+back to this layer. iOS is not a desktop OS with a mobile skin — it is a
+sandboxed, entitlement-gated, frequently-backgrounded environment with hard
+rules. Learn the rules, then pick your framework.
+
+<Callout kind="tip" title="Think OS first, SDK second">
+Apple documentation is framework-oriented, but the most useful mental model
+is OS-oriented: process, sandbox, bundle, entitlements. Once those are clear,
+any new framework (SwiftUI, WidgetKit, App Intents) slots in cleanly.
+</Callout>
+
+## What we'll cover
+
+<StepList
+  steps={[
+    { title: 'The iOS layer stack', description: 'Cocoa Touch, Media, Core Services, Core OS — what each layer gives you and when to reach down.' },
+    { title: 'The app sandbox', description: 'Documents, Library, Caches, tmp — what each directory is for, backup behaviour, and iCloud implications.' },
+    { title: 'The .app bundle', description: 'Info.plist, assets, embedded frameworks, code signature — how iOS loads your app on launch.' },
+    { title: 'ATS, entitlements & capabilities', description: 'App Transport Security, entitlement files, provisioning profile matching.' },
+    { title: 'Processes, memory & backgrounding', description: 'Jetsam, memory warnings, background task API — why long-lived work is hard on iOS.' },
+    { title: 'Universal apps & targets', description: 'iPhone, iPad, Mac Catalyst, Apple Silicon Designed-for-iPad — one codebase, many idioms.' },
+    { title: 'Simulator vs device', description: 'Where the simulator lies, and where you must test on hardware.' },
+  ]}
+/>
+
+## The four layers (top down)
+
+- **Cocoa Touch** — UIKit, SwiftUI, MapKit, PushKit, PencilKit. Everything a
+  UI engineer touches daily.
+- **Media** — AVFoundation, Core Image, Core Animation, Metal. Video, audio,
+  GPU drawing.
+- **Core Services** — Foundation, CloudKit, Core Data, Network.framework,
+  Core Location. The value types, persistence, and system services layer.
+- **Core OS** — Darwin (XNU kernel), libSystem, Security, Accelerate. Rarely
+  touched directly, but it's where your threads, file descriptors, and
+  cryptography ultimately live.
+
+You'll spend 90% of your time in Cocoa Touch and Foundation. Knowing the
+layers below matters when you profile (Instruments shows Core Animation
+commits), when you handle certificates (Security.framework), or when you
+need `dispatch_*` primitives not surfaced by Swift Concurrency.
+
+## The app sandbox
+
+Every iOS app runs in its own container directory. Nothing your app writes
+ever leaves this container unless you explicitly share it (document picker,
+activity sheet, App Group). Four subdirectories matter:
+
+<FeatureGrid
+  columns={2}
+  features={[
+    { icon: 'folder', title: 'Documents/', description: 'User-generated content the user would be upset to lose. Backed up to iCloud/iTunes by default. Exposed to Files.app if you set UIFileSharingEnabled.' },
+    { icon: 'archive', title: 'Library/', description: 'App support data (databases, preferences, caches subfolder). Backed up except Library/Caches. Most of your persistent state lives here.' },
+    { icon: 'trash', title: 'Library/Caches/', description: 'Regenerable data (image caches, downloaded thumbnails). NOT backed up. iOS may purge under disk pressure — assume it can vanish.' },
+    { icon: 'clock', title: 'tmp/', description: 'Scratch space for the current session. NOT backed up, purged aggressively between launches. Never store anything you need tomorrow.' },
+  ]}
+/>
+
+```swift
+import Foundation
+
+let fm = FileManager.default
+
+let documents = try fm.url(for: .documentDirectory,
+                           in: .userDomainMask,
+                           appropriateFor: nil,
+                           create: true)
+
+let caches    = try fm.url(for: .cachesDirectory,
+                           in: .userDomainMask,
+                           appropriateFor: nil,
+                           create: true)
+
+let appSupport = try fm.url(for: .applicationSupportDirectory,
+                            in: .userDomainMask,
+                            appropriateFor: nil,
+                            create: true)
+
+let tmp = fm.temporaryDirectory   // convenience for NSTemporaryDirectory()
+```
+
+<Callout kind="warning" title="Sandbox implications you will forget">
+- Absolute paths change every launch on device (the container UUID rotates).
+  Never persist a full file URL — persist the filename and rebuild the URL.
+- `Library/Caches` can be deleted while your app is *running* on low-storage
+  devices. Always handle missing files gracefully.
+- If you write large files to `Documents`, they count toward the user's iCloud
+  backup. Mark regenerable data with <code>URLResourceValues.isExcludedFromBackup = true</code>
+  or move it to <code>Caches</code>.
+- Shared data between your app and an extension (widget, share sheet) needs an
+  App Group — the sandbox does not leak across targets.
+</Callout>
+
+## The .app bundle
+
+A built iOS app is a directory named `YourApp.app`. Inside:
+
+```
+MyShop.app/
+├── MyShop                    # the Mach-O executable
+├── Info.plist                # bundle metadata (binary plist on device)
+├── PkgInfo                   # legacy 8-byte type/creator marker
+├── embedded.mobileprovision  # provisioning profile (ad-hoc/dev/enterprise)
+├── _CodeSignature/           # code signing manifest
+├── Assets.car                # compiled asset catalog (images, colors, symbols)
+├── Base.lproj/               # storyboards & localized resources
+├── en.lproj/
+└── Frameworks/               # embedded dynamic frameworks (SPM/Swift libs)
+```
+
+The executable is loaded by `launchd` via `dyld`, frameworks in
+`Frameworks/` are linked, and `UIApplicationMain` (or SwiftUI's synthesized
+equivalent) takes over. `Info.plist` is the contract with iOS — bundle ID,
+supported orientations, required device capabilities, usage strings for
+privacy APIs.
+
+## App Transport Security
+
+Since iOS 9, every network call must use HTTPS with TLS 1.2+ and modern
+ciphers, unless you add a `NSAppTransportSecurity` exception. Don't add the
+blanket `NSAllowsArbitraryLoads` key — App Review rejects it without
+justification, and it's lazy.
+
+```xml
+<key>NSAppTransportSecurity</key>
+<dict>
+  <key>NSExceptionDomains</key>
+  <dict>
+    <key>legacy-internal.corp</key>
+    <dict>
+      <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+      <key>NSIncludesSubdomains</key><true/>
+    </dict>
+  </dict>
+</dict>
+```
+
+The right fix is almost always "put a proper TLS cert on the server."
+
+## Entitlements & capabilities
+
+An **entitlement** is a signed key/value pair baked into your code signature
+that grants a runtime privilege: iCloud, Push, HealthKit, App Groups, Sign in
+with Apple, Keychain sharing. Xcode's "Signing & Capabilities" tab edits
+`YourApp.entitlements` and the App ID on developer.apple.com in lockstep.
+
+```xml
+<!-- YourApp.entitlements -->
+<key>com.apple.developer.applesignin</key>
+<array><string>Default</string></array>
+
+<key>com.apple.security.application-groups</key>
+<array><string>group.com.example.myshop</string></array>
+```
+
+If the provisioning profile doesn't grant an entitlement your binary claims,
+the app crashes at launch on device with a cryptic code-signing error. This
+is the #1 cause of "works in simulator, fails on TestFlight."
+
+## Processes, memory & backgrounding
+
+iOS does **not** let your app run freely in the background. The kernel's
+Jetsam daemon kills apps based on priority and memory pressure. Concretely:
+
+- Foreground active apps have the highest priority and the most memory
+  headroom (varies by device — roughly 2 GB on 6 GB devices).
+- Background apps are suspended within seconds unless they opt into a
+  specific mode (`audio`, `location`, `voip`, `background-processing`).
+- `UIApplication.didReceiveMemoryWarning` fires before Jetsam — respond by
+  evicting caches, or you will be killed.
+- For finite background work use `BGTaskScheduler` (`BGProcessingTask`,
+  `BGAppRefreshTask`). For a short grace window after backgrounding, use
+  `UIApplication.shared.beginBackgroundTask`.
+
+## Universal apps & targets
+
+A modern app runs across many form factors from a single binary:
+
+- **iPhone** — compact width most of the time.
+- **iPad** — multitasking, Split View, Stage Manager, pointer & keyboard.
+- **Mac Catalyst** — your iPad app recompiled with AppKit adapters, menu bar,
+  window chrome.
+- **Designed for iPad on Apple Silicon** — your unmodified iPad binary
+  running on macOS with no work from you.
+- **visionOS** — opt-in with a separate destination; layout adapts via
+  ornaments and volumetric windows.
+
+Deal with form factors via **size classes** (`compact`/`regular` horizontal &
+vertical) and **trait collections**, not by checking `UIDevice.current`.
+
+## Simulator vs device
+
+The simulator is a user-mode process running your x86_64/arm64 binary on
+macOS. Fast, but not the device. It lies about:
+
+- **Performance** — the simulator uses your Mac's CPU/GPU. Never profile
+  performance in the simulator.
+- **Camera, ARKit, HealthKit, Apple Pay, push notifications** — either
+  stubbed or unavailable. Test on hardware.
+- **Memory pressure & Jetsam** — simulated app has your Mac's RAM. Low-memory
+  bugs only surface on device.
+- **Keychain** — behaves differently; keychain access groups work on device.
+- **Background modes** — simulator doesn't enforce the suspension rules.
+
+Rule of thumb: develop in the simulator, **verify every release build on at
+least one physical device** before submitting.
+
+<LibraryGrid libraries={[
+  { name: 'App Programming Guide for iOS', tagline: 'Apple · runtime concepts', description: 'The canonical document on the app lifecycle, execution states, and sandbox.', url: 'https://developer.apple.com/library/archive/documentation/iPhone/Conceptual/iPhoneOSProgrammingGuide/Introduction/Introduction.html', recommended: true },
+  { name: 'File System Basics', tagline: 'Apple · sandbox directories', description: 'Authoritative reference on Documents / Library / Caches / tmp and backup rules.', url: 'https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/FileSystemOverview/FileSystemOverview.html' },
+  { name: 'Entitlements', tagline: 'Apple · capability keys', description: 'Complete list of entitlement keys, what each grants, and which require explicit Apple review.', url: 'https://developer.apple.com/documentation/bundleresources/entitlements' },
+]} />
+
+## Exercises
+
+1. At app launch, print the absolute URLs for `Documents`, `Library`,
+   `Library/Caches`, and `tmp` using `FileManager.default.url(for:in:...)`.
+   Launch, kill, and relaunch the app — confirm the container UUID stays
+   stable within an install and changes when you uninstall/reinstall.
+2. Write a 1 MB file into `Documents/` and a 1 MB file into `Library/Caches/`.
+   Mark the `Documents` file with `isExcludedFromBackup = true` via
+   `URLResourceValues`. Inspect the container in Xcode's Devices window and
+   confirm which files iCloud would back up.
+
+## Next
+
+Continue to **[Topic 2 · App Lifecycle & Xcode](/docs/ios-fundamentals/topic-2-lifecycle-xcode)** —
+how the OS launches your process, vends scenes, and wires up the tools you'll live in.

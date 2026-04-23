@@ -1,0 +1,209 @@
+---
+id: topic-1-instruments
+title: Topic 1 · Instruments & Profiling
+sidebar_label: 1 · Instruments
+description: Time Profiler, Allocations, Leaks, SwiftUI, Network templates, os_signpost with OSSignposter, and the reproduce-measure-fix-remeasure loop.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 10 · Topic 1 · ~2 hours</span>
+  <h2>Profile before you optimize</h2>
+  <div>
+    Instruments is the only truth source for CPU, memory, network, and
+    SwiftUI render cost on Apple platforms. This topic walks the templates
+    you'll use weekly, how to read their output, and how to wire
+    signposts so your own code shows up on the timeline.
+  </div>
+</div>
+
+## When to profile
+
+Open Instruments only when you have a measured problem — a hang, a scroll
+jank report, a MetricKit alert, a slow launch. Optimizing based on a feeling
+burns time and usually pessimizes something else.
+
+<Callout kind="warning" title="Never optimize on a hunch — measure first">
+Every experienced iOS engineer has rewritten a hot-looking function only to
+discover Instruments pinned the cost on a single stray `DateFormatter`
+allocation. Profile, then change one thing, then profile again. If the number
+didn't move, revert.
+</Callout>
+
+## Launching Instruments
+
+From Xcode: **Product → Profile** (⌘I) builds with optimizations and opens
+the template picker. You can also run `xcrun xctrace record --template "Time Profiler"`
+for headless CI runs. Always profile a **Release** build on a **real device**
+— simulator timings are misleading, and Debug builds mask compiler wins.
+
+Templates you will actually use:
+
+<FeatureGrid
+  columns={2}
+  features={[
+    { title: 'Time Profiler', description: 'Statistical CPU sampler. "Where is main thread time going?" is almost always its answer.' },
+    { title: 'Allocations', description: 'Object allocations over time. Use generation markers to find what survived across a repeated action.' },
+    { title: 'Leaks', description: 'Hooks malloc to flag objects with no inbound references. Complements Memory Graph for retain cycles.' },
+    { title: 'SwiftUI', description: 'Shows view-body recompute counts and long hangs tied to SwiftUI updates — essential in iOS 17+.' },
+    { title: 'Network', description: 'URLSession requests on a timeline with size, latency, and TLS breakdown.' },
+    { title: 'CPU Counters', description: 'Low-level: instructions retired, branch mispredicts, cache misses. Reach for this only when Time Profiler is exhausted.' },
+  ]}
+/>
+
+## Reading Time Profiler
+
+After a recording, invert the call tree (**Call Tree → Invert**) and hide
+system libraries (**Hide System Libraries**) so your code rises to the top.
+Columns: **Weight** is self + child CPU time, **Self** is just the leaf. Sort
+by Self to find the actual hot frame, not the orchestrator above it.
+
+Common pitfall: symbols show as hex addresses. That means the dSYM didn't
+load — in the Instruments toolbar, **File → Symbols…** and point it at the
+Release dSYM from your archive. Always archive before profiling production
+builds.
+
+## Allocations: total vs persistent
+
+Two columns matter:
+
+- **Total Bytes** — how much was allocated ever. High numbers here just mean
+  you churn memory; fine if released promptly.
+- **Persistent Bytes** — how much is *still alive* at the cursor. Rising
+  persistent bytes across a repeated action means a leak or an unbounded cache.
+
+**Generation analysis** is the trick: mark a generation (the flag button) at
+a resting state, do the action once, mark another generation, do it again,
+and so on. Anything showing up in every generation's persistent bytes is
+leaking across that action.
+
+## Leaks
+
+The Leaks template flags unreferenced heap objects (true leaks). It does
+**not** catch retain cycles where two objects hold each other — for that,
+pause in the debugger and open **Debug → View Memory Graph** in Xcode. Purple
+exclamation icons are cycles.
+
+## SwiftUI template
+
+New in iOS 17+, this template is essential for modern apps:
+
+- **View Body** track shows how often each view's `body` recomputed. A
+  stable list row rebuilding 60 times a second is the smoking gun.
+- **Long Hangs** flags main-thread stalls > 250ms. Drill in to the stack to
+  find the offending `Image(uiImage:)` decoding or JSON parse.
+- **Update Groups** visualize which state change caused which recompute —
+  helpful when a single `@Observable` mutation fans out further than intended.
+
+## Network template
+
+Each request becomes a row on the timeline, stacked with DNS, TLS, TTFB, and
+body phases. Look for: serial waterfalls that should be parallel, chatty
+small requests that should be batched, and payloads > 1 MB that should be
+gzipped or paginated.
+
+## Custom timeline events with os_signpost
+
+Signposts put **your** events on the Instruments timeline alongside CPU and
+memory. Use the Swift-native `OSSignposter` API (iOS 15+):
+
+```swift
+import OSLog
+
+private let signposter = OSSignposter(
+    subsystem: "com.example.shop",
+    category: "ImagePipeline"
+)
+
+struct ImagePipeline {
+    func decode(_ data: Data, targetSize: CGSize) async throws -> UIImage {
+        let state = signposter.beginInterval(
+            "decode",
+            id: signposter.makeSignpostID(),
+            "bytes=\(data.count), target=\(Int(targetSize.width))x\(Int(targetSize.height))"
+        )
+        defer { signposter.endInterval("decode", state) }
+
+        let image = try await Task.detached(priority: .userInitiated) {
+            try ImageDecoder.decode(data, target: targetSize)
+        }.value
+
+        signposter.emitEvent("decoded", "size=\(image.size.debugDescription)")
+        return image
+    }
+}
+```
+
+Record with the **os_signpost** instrument or pair it with Time Profiler:
+intervals show up as ranges on the timeline, events as pins. You'll see
+exactly which decode took 180ms and correlate it with a frame drop above.
+
+## The measurement loop
+
+<StepList
+  steps={[
+    { title: 'Reproduce', description: 'Write a script or UI test that triggers the slow path reliably on a real device. If you cannot reproduce, you cannot verify a fix.' },
+    { title: 'Measure', description: 'Run Instruments with the right template. Record three times and take the median — single samples lie.' },
+    { title: 'Hypothesize', description: 'Point to one specific symbol or allocation in the trace and predict how much faster it could be. Write the number down.' },
+    { title: 'Fix', description: 'Change one thing. Keep the diff minimal so you can revert if it does not help.' },
+    { title: 'Re-measure', description: 'Same device, same scenario, three runs. If the number did not move, revert and pick a different target.' },
+    { title: 'Lock it in', description: 'Add a regression test: XCTest measure { }, MetricKit threshold, or a CI hang-rate assertion.' },
+  ]}
+/>
+
+## A repeatable perf test
+
+Take the guesswork out — codify the scenario:
+
+```swift
+import XCTest
+
+final class FeedScrollPerformanceTests: XCTestCase {
+    func test_scrollingThroughThousandItems() {
+        let options = XCTMeasureOptions.default
+        options.iterationCount = 5
+
+        measure(
+            metrics: [
+                XCTClockMetric(),
+                XCTMemoryMetric(),
+                XCTCPUMetric(),
+            ],
+            options: options
+        ) {
+            let app = XCUIApplication()
+            app.launchArguments += ["-uiTesting", "-seedFeed", "1000"]
+            app.launch()
+            app.collectionViews["feed"].swipeUp(velocity: .fast)
+            app.collectionViews["feed"].swipeUp(velocity: .fast)
+            app.collectionViews["feed"].swipeUp(velocity: .fast)
+        }
+    }
+}
+```
+
+Xcode records a baseline on the first run; future runs fail the test if the
+median regresses past the allowed standard deviation. Now perf is a PR check.
+
+## Related reading
+
+<LibraryGrid libraries={[
+  { name: 'Instruments User Guide', tagline: 'Official reference', description: 'Apple\'s authoritative guide to every template, interval, and metric Instruments collects.', url: 'https://help.apple.com/instruments/mac/current/', recommended: true },
+  { name: 'OSSignposter', tagline: 'Swift signpost API', description: 'Modern replacement for os_signpost C macros. Interval and event APIs with native String interpolation.', url: 'https://developer.apple.com/documentation/os/ossignposter', recommended: true },
+  { name: 'xctrace', tagline: 'Headless profiling', description: 'Command-line driver for Instruments. Useful for CI regression traces.', url: 'https://developer.apple.com/documentation/xcode/analyzing-the-performance-of-your-shipping-app' },
+  { name: 'WWDC · Meet Swift Charts for Instruments', tagline: 'Custom instruments', description: 'How to ship your own .instrument package so any engineer on the team sees the same visualization.', url: 'https://developer.apple.com/videos/all-videos/' },
+]} />
+
+## Exercises
+
+1. Pick the slowest screen in your sample app. Record Time Profiler three
+   times on a real device, identify the hottest non-system frame, and write
+   down a hypothesis for a fix in one sentence before changing code.
+2. Add `OSSignposter` intervals around your network layer and image pipeline.
+   Record with the os_signpost template and confirm intervals line up with
+   the hangs shown by the SwiftUI template.
+
+## Next
+
+Continue to **[Topic 2 · App Launch, Memory & Size](/docs/performance/topic-2-optimisation)**.

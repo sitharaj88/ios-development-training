@@ -1,0 +1,276 @@
+---
+id: topic-1-swiftdata-coredata
+title: Topic 1 · SwiftData & Core Data
+sidebar_label: 1 · SwiftData & Core Data
+description: UserDefaults, @AppStorage, SwiftData (@Model/@Query), ModelContainer, migrations, Core Data, CloudKit sync, and when to pick GRDB or raw SQLite.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 05 · Topic 1 · Object graphs</span>
+  <h2>Pick the right persistence engine — once</h2>
+  <div>
+    The "just use Core Data" era is over. SwiftData is the new default for iOS 17+,
+    but UserDefaults, Core Data, and raw SQLite each still have their place. Choosing
+    wrong means rewrites at 100k rows. This topic gives you the decision tree.
+  </div>
+</div>
+
+## UserDefaults — for flags, not data
+
+UserDefaults is a **plist-backed** key-value store. It's meant for app preferences
+and small flags — not models, not arrays of things, and definitely not secrets.
+Every write hits disk (eventually), and the entire plist is loaded into memory.
+
+```swift
+UserDefaults.standard.set(true, forKey: "hasOnboarded")
+UserDefaults.standard.set("dark", forKey: "themePreference")
+let theme = UserDefaults.standard.string(forKey: "themePreference") ?? "system"
+```
+
+For SwiftUI, `@AppStorage` binds a property to UserDefaults reactively:
+
+```swift
+struct SettingsView: View {
+    @AppStorage("hasOnboarded") private var hasOnboarded = false
+    @AppStorage("themePreference") private var theme = "system"
+
+    var body: some View {
+        Toggle("Show onboarding", isOn: $hasOnboarded.not)
+        Picker("Theme", selection: $theme) {
+            Text("System").tag("system")
+            Text("Dark").tag("dark")
+            Text("Light").tag("light")
+        }
+    }
+}
+```
+
+<Callout kind="warning" title="UserDefaults is the wrong tool when…">
+You have more than ~10KB of data, anything sensitive (tokens, emails, PII), arrays
+growing over time, or queryable records. UserDefaults has no indexes, no migrations,
+and is world-readable on backups. Reach for SwiftData or Keychain instead.
+</Callout>
+
+## SwiftData — the new default
+
+SwiftData is a Swift-native wrapper over Core Data. Your model is just a class
+annotated with `@Model`, and the container wires up persistence automatically.
+
+```swift
+import SwiftData
+
+@Model
+final class Trip {
+    var title: String
+    var startDate: Date
+    var notes: String
+    @Relationship(deleteRule: .cascade, inverse: \Activity.trip)
+    var activities: [Activity] = []
+
+    init(title: String, startDate: Date, notes: String = "") {
+        self.title = title
+        self.startDate = startDate
+        self.notes = notes
+    }
+}
+
+@Model
+final class Activity {
+    var name: String
+    var scheduledAt: Date
+    var trip: Trip?
+
+    init(name: String, scheduledAt: Date) {
+        self.name = name
+        self.scheduledAt = scheduledAt
+    }
+}
+```
+
+Wire the container at the app root, and use `@Query` in any view for live,
+filtered, sorted results:
+
+```swift
+@main
+struct TravelApp: App {
+    var body: some Scene {
+        WindowGroup { TripList() }
+            .modelContainer(for: [Trip.self, Activity.self])
+    }
+}
+
+struct TripList: View {
+    @Query(filter: #Predicate<Trip> { $0.startDate > .now },
+           sort: \.startDate) private var upcoming: [Trip]
+    @Environment(\.modelContext) private var context
+
+    var body: some View {
+        List(upcoming) { trip in Text(trip.title) }
+            .toolbar {
+                Button("Add") {
+                    context.insert(Trip(title: "Kyoto", startDate: .now))
+                    try? context.save()
+                }
+            }
+    }
+}
+```
+
+`@Query` subscribes to the context automatically — inserts, deletes, and edits
+propagate to the UI without `@Published` or Combine glue.
+
+### Delete rules that match your domain
+
+- `.cascade` — child objects are deleted when the parent is deleted (trip → activities).
+- `.nullify` — relationship is set to nil but the child survives (author → posts you want to keep).
+- `.deny` — refuses the delete if children exist (rare, but useful for billing).
+- `.noAction` — you own the cleanup; use only when you understand the consequences.
+
+## Migrations — plan them from day one
+
+Schema evolves. SwiftData ships `VersionedSchema` and `SchemaMigrationPlan` so you
+can ship V2 without wiping user data.
+
+```swift
+enum TravelSchemaV1: VersionedSchema {
+    static var versionIdentifier = Schema.Version(1, 0, 0)
+    static var models: [any PersistentModel.Type] { [Trip.self] }
+}
+
+enum TravelSchemaV2: VersionedSchema {
+    static var versionIdentifier = Schema.Version(2, 0, 0)
+    static var models: [any PersistentModel.Type] { [Trip.self, Activity.self] }
+}
+
+enum TravelMigration: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [TravelSchemaV1.self, TravelSchemaV2.self]
+    }
+    static var stages: [MigrationStage] {
+        [.lightweight(fromVersion: TravelSchemaV1.self, toVersion: TravelSchemaV2.self)]
+    }
+}
+```
+
+For structural changes (split a field, merge entities), use `MigrationStage.custom`
+with a `willMigrate` / `didMigrate` pair.
+
+<Callout kind="info" title="Version your schema on day one">
+Even if you only ever ship V1, setting up `VersionedSchema` now costs 10 lines and
+buys you a pain-free V2. Retrofitting migrations after users have data is the single
+most-painful bug class in persistence.
+</Callout>
+
+## Core Data — still relevant
+
+SwiftData sits on top of Core Data, and huge apps (Notes, Mail, anything older than
+iOS 17) still use Core Data directly. You should be able to read it.
+
+```swift
+let container = NSPersistentContainer(name: "Model")
+container.loadPersistentStores { _, error in
+    if let error { fatalError("CoreData: \(error)") }
+}
+let ctx = container.viewContext
+let trip = Trip(context: ctx)
+trip.title = "Kyoto"
+try ctx.save()
+```
+
+Core Data's advantages: richer fetch requests (`NSPredicate`, batch delete,
+faulting), `NSFetchedResultsController` for table views, manual migration mapping
+models, and back-deployment to iOS 13+.
+
+## SwiftData vs Core Data vs GRDB
+
+<ComparisonCard
+  left={{
+    label: 'Modern',
+    title: 'SwiftData',
+    variant: 'new',
+    points: [
+      '@Model macro, zero boilerplate',
+      '@Query reactive in SwiftUI',
+      'CloudKit sync built in',
+      'iOS 17+ only · fewer escape hatches',
+    ],
+  }}
+  right={{
+    label: 'Mature',
+    title: 'Core Data',
+    variant: 'old',
+    points: [
+      'NSManagedObject — verbose but flexible',
+      'Back-deploys to iOS 13',
+      'Manual migration mapping models',
+      'Still powers huge production apps',
+    ],
+  }}
+/>
+
+<ComparisonCard
+  left={{
+    label: 'SQL-first',
+    title: 'GRDB.swift',
+    variant: 'neutral',
+    points: [
+      'Direct SQLite access with type safety',
+      'Observation via ValueObservation',
+      'Full control — you write the SQL',
+      'Best for large, query-heavy datasets',
+    ],
+  }}
+  right={{
+    label: 'Raw',
+    title: 'SQLite (C API)',
+    variant: 'neutral',
+    points: [
+      'Zero dependencies, already on the device',
+      'You own every byte',
+      'No ORM, no observers — you build them',
+      'Only pick when you must (shared DB format, FTS5 tuning)',
+    ],
+  }}
+/>
+
+## CloudKit sync with SwiftData
+
+Flip one flag and your models sync across a user's devices:
+
+```swift
+let config = ModelConfiguration(
+    "Travel",
+    cloudKitDatabase: .private("iCloud.com.example.travel")
+)
+let container = try ModelContainer(for: Trip.self, configurations: config)
+```
+
+Caveats: every model needs default values (CloudKit can't store required-without-default),
+relationships must be optional, and you need the iCloud capability plus a CloudKit
+container in your provisioning profile.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'GRDB.swift', tagline: 'SQLite toolkit', description: 'SQL-first, observable, battle-tested. The right choice when you want control.', url: 'https://github.com/groue/GRDB.swift', recommended: true },
+  { name: 'Realm Swift', tagline: 'Object database', description: 'Cross-platform object database with live objects and optional sync.', url: 'https://github.com/realm/realm-swift' },
+  { name: 'SQLite.swift', tagline: 'Typed SQLite', description: 'Thin, type-safe SQLite wrapper — smaller surface than GRDB.', url: 'https://github.com/stephencelis/SQLite.swift' },
+]} />
+
+## Key takeaways
+
+- **SwiftData is the default** for new iOS 17+ apps. Core Data is still correct for back-deploy and advanced control.
+- **Plan migrations on day one** — `VersionedSchema` is ten lines and saves you from a rewrite later.
+- **Pick GRDB when your workload is SQL-shaped** (large tables, full-text search, reporting queries).
+- **UserDefaults is for flags only** — not models, not arrays, not secrets.
+
+## Practice exercises
+
+1. Build a SwiftData trip planner with a one-to-many `Trip → Activity` relationship using `.cascade`, then write a migration that adds a `destination` field to `Trip`.
+2. Implement the same model graph in GRDB with `ValueObservation`, and benchmark a 10k-row insert against SwiftData.
+
+## Next
+
+Continue to **[Topic 2 · Keychain & CloudKit](./topic-2-keychain-cloudkit)** — store the things that must never leak and sync the things that must follow the user.

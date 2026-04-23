@@ -1,0 +1,281 @@
+---
+id: topic-3-widgets-clips-bluetooth
+title: Topic 3 · Widgets, App Clips & Bluetooth
+sidebar_label: 3 · Widgets, Clips & BT
+description: WidgetKit timelines, Live Activities, App Clip invocations, and Core Bluetooth central/peripheral — the surfaces that live outside your app icon.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 3 · Week 3 · Surfaces beyond the icon</span>
+  <h2>Widgets, Clips, and the radio</h2>
+  <div>
+    Widgets put your data on the Home Screen, Lock Screen, and StandBy. App
+    Clips let someone use your app without installing. Core Bluetooth lets
+    you talk to the watch on the wrist and the lock on the door. Each is its
+    own execution model — respect it.
+  </div>
+</div>
+
+## WidgetKit — timelines, not live views
+
+<Callout type="warning" title="Widgets are snapshots, not live">
+  A widget is not a running view. It's a series of pre-rendered entries on a
+  <em>timeline</em> that iOS picks from at display time. Your widget's
+  <code>body</code> runs when the system renders a snapshot — not on a timer,
+  not in response to data changes. If you need live behavior, use a Live
+  Activity (ActivityKit) or a <code>deeplink</code> to the app. Expect
+  refreshes no more often than every ~15 minutes on battery.
+</Callout>
+
+### The widget families you can target
+
+<FeatureGrid features={[
+  { title: 'Home Screen · systemSmall/Medium/Large', description: 'The classic widgets. Full color, rich layout, tappable with Link + App Intents in iOS 17.' },
+  { title: 'Home Screen · systemExtraLarge', description: 'iPad only. Great for dashboards and multi-column stats.' },
+  { title: 'Lock Screen · accessoryCircular', description: 'Tiny ring/gauge. Think battery, activity ring, step count.' },
+  { title: 'Lock Screen · accessoryRectangular', description: 'Two to three lines of text — next meeting, latest score.' },
+  { title: 'Lock Screen · accessoryInline', description: 'Single line of text above the clock. Subtle, always monochrome.' },
+  { title: 'StandBy · systemSmall (tinted)', description: 'iOS 17 StandBy mode reuses Home Screen small widgets in a tinted style.' },
+]} />
+
+### TimelineProvider vs IntentTimelineProvider
+
+Use `TimelineProvider` for widgets that need no configuration. Use the modern
+`AppIntentTimelineProvider` (iOS 17+) for widgets where the user picks what
+they see — a stock symbol, a city, a specific list.
+
+```swift
+import WidgetKit
+import SwiftUI
+import AppIntents
+
+struct SymbolEntry: TimelineEntry {
+    let date: Date
+    let symbol: String
+    let price: Decimal
+}
+
+struct PickSymbolIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "Pick a symbol"
+    @Parameter(title: "Symbol", default: "AAPL") var symbol: String
+}
+
+struct SymbolProvider: AppIntentTimelineProvider {
+    func placeholder(in context: Context) -> SymbolEntry {
+        SymbolEntry(date: .now, symbol: "AAPL", price: 0)
+    }
+
+    func snapshot(for configuration: PickSymbolIntent,
+                  in context: Context) async -> SymbolEntry {
+        let price = (try? await Market.price(for: configuration.symbol)) ?? 0
+        return SymbolEntry(date: .now, symbol: configuration.symbol, price: price)
+    }
+
+    func timeline(for configuration: PickSymbolIntent,
+                  in context: Context) async -> Timeline<SymbolEntry> {
+        var entries: [SymbolEntry] = []
+        for offset in 0..<6 {
+            let date = Date.now.addingTimeInterval(TimeInterval(offset * 15 * 60))
+            let price = (try? await Market.price(for: configuration.symbol)) ?? 0
+            entries.append(SymbolEntry(date: date, symbol: configuration.symbol, price: price))
+        }
+        return Timeline(entries: entries, policy: .after(.now.addingTimeInterval(90 * 60)))
+    }
+}
+
+struct SymbolWidgetView: View {
+    let entry: SymbolEntry
+    var body: some View {
+        VStack(alignment: .leading) {
+            Text(entry.symbol).font(.headline)
+            Text(entry.price, format: .currency(code: "USD"))
+                .font(.system(.title2, design: .rounded, weight: .semibold))
+                .contentTransition(.numericText())
+        }
+        .containerBackground(.fill.tertiary, for: .widget)
+    }
+}
+
+struct SymbolWidget: Widget {
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: "Symbol",
+                               intent: PickSymbolIntent.self,
+                               provider: SymbolProvider()) { entry in
+            SymbolWidgetView(entry: entry)
+        }
+        .supportedFamilies([.systemSmall, .accessoryRectangular, .accessoryInline])
+    }
+}
+```
+
+Tap handling is via `Link` + a `URL` that your app opens, or — iOS 17+ —
+via `Button(intent:)` with an `AppIntent` that can mutate state and call
+`WidgetCenter.shared.reloadAllTimelines()`.
+
+## Live Activities — the one live thing
+
+When you genuinely need real-time UI on the Lock Screen and Dynamic Island
+(delivery tracking, sports scores, timers), that's ActivityKit, not WidgetKit.
+
+```swift
+import ActivityKit
+
+struct DeliveryAttributes: ActivityAttributes {
+    struct ContentState: Codable, Hashable {
+        var etaMinutes: Int
+        var status: String
+    }
+    let orderID: String
+}
+
+let attrs = DeliveryAttributes(orderID: "A-812")
+let state = DeliveryAttributes.ContentState(etaMinutes: 12, status: "On the way")
+let content = ActivityContent(state: state, staleDate: .now.addingTimeInterval(60 * 60))
+let activity = try Activity.request(attributes: attrs, content: content, pushType: .token)
+```
+
+Updates come from your server via a push token you register for the activity,
+or locally via `activity.update(_:)`. UI is a WidgetKit bundle with a
+`ActivityConfiguration` entry.
+
+## App Clips — your app, without the install
+
+An App Clip is a small (&lt; 15 MB uncompressed) slice of your app that launches
+from a URL, NFC tag, QR code, App Clip Code, or Messages link. It has access
+to a limited set of frameworks — no HealthKit, no background tasks — and
+presents a single focused task (pay for parking, order this coffee).
+
+### Invocation paths
+
+<StepList
+  steps={[
+    { title: 'Smart App Banner / link', description: 'A URL with your associated domain (.well-known/appclips) opens the clip instead of Safari.' },
+    { title: 'NFC tag', description: 'User taps an NFC sticker on a table or kiosk — iOS shows the clip card with no install step.' },
+    { title: 'QR code', description: 'Camera scans the code; iOS presents the clip card. Works on any standard QR payload.' },
+    { title: 'App Clip Code', description: 'Apple\'s branded code (colorful ring). Can also be read via NFC if encoded.' },
+    { title: 'Messages / Maps / Safari', description: 'Links shared in Messages or surfaced from a Maps place card can launch the clip directly.' },
+  ]}
+/>
+
+### Clip → full app migration
+
+The clip and full app share an App Group, so any data the clip writes
+(pending order, partial profile) is available when the user installs the
+full app. Use `ASWebAuthenticationSession` for Sign in with Apple at My Apple
+ID — it persists across the install. Design for the clip to be *useful even
+if the user never installs*, and *delightful if they do*.
+
+## Core Bluetooth — central and peripheral
+
+<ComparisonCard
+  left={{
+    label: 'Central',
+    title: 'Your phone talks to devices',
+    variant: 'neutral',
+    points: [
+      'CBCentralManager scans for peripherals',
+      'Connect, discover services + characteristics, read/write/notify',
+      'Used for: heart-rate straps, locks, scales, beacons',
+      'Requires NSBluetoothAlwaysUsageDescription',
+    ],
+  }}
+  right={{
+    label: 'Peripheral',
+    title: 'Your phone pretends to be a device',
+    variant: 'neutral',
+    points: [
+      'CBPeripheralManager advertises services',
+      'Respond to read/write requests from other centrals',
+      'Used for: peer-to-peer sync, phone-as-beacon',
+      'Some services (HRM) are blocked from advertising',
+    ],
+  }}
+/>
+
+### Minimal central
+
+```swift
+import CoreBluetooth
+
+final class Scanner: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    private var manager: CBCentralManager!
+    private var peripheral: CBPeripheral?
+    private let heartRate = CBUUID(string: "180D")
+    private let measurement = CBUUID(string: "2A37")
+
+    override init() {
+        super.init()
+        manager = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        if central.state == .poweredOn {
+            central.scanForPeripherals(withServices: [heartRate])
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any], rssi RSSI: NSNumber) {
+        self.peripheral = peripheral
+        peripheral.delegate = self
+        central.stopScan()
+        central.connect(peripheral)
+    }
+
+    func centralManager(_ central: CBCentralManager,
+                        didConnect peripheral: CBPeripheral) {
+        peripheral.discoverServices([heartRate])
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        peripheral.services?.forEach {
+            peripheral.discoverCharacteristics([measurement], for: $0)
+        }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        service.characteristics?.forEach { peripheral.setNotifyValue(true, for: $0) }
+    }
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard let data = characteristic.value, let bpm = data.dropFirst().first else { return }
+        print("Heart rate: \(bpm) bpm")
+    }
+}
+```
+
+Enable `Background Modes → Uses Bluetooth LE accessories` if you need
+connections to survive into the background — the OS will relaunch you for
+state restoration if you set `CBCentralManagerOptionRestoreIdentifierKey`.
+
+## Recommended reading
+
+<LibraryGrid libraries={[
+  { name: 'WidgetKit', tagline: 'Timelines and widget families', description: 'Apple\'s framework for Home/Lock Screen widgets, StandBy, and watchOS complications.', url: 'https://developer.apple.com/documentation/widgetkit', recommended: true },
+  { name: 'Widget Examples', tagline: 'Apple sample code', description: 'Apple\'s official sample project covering configuration intents, deep links, and all widget families.', url: 'https://developer.apple.com/documentation/widgetkit/building-widgets-using-widgetkit-and-swiftui' },
+  { name: 'ActivityKit', tagline: 'Live Activities + Dynamic Island', description: 'Real-time Lock Screen and Dynamic Island presentations with push-driven updates.', url: 'https://developer.apple.com/documentation/activitykit' },
+  { name: 'App Clips', tagline: 'Instant, install-free experiences', description: '<15 MB slice of your app launched from URL, NFC, QR, or App Clip Code.', url: 'https://developer.apple.com/documentation/app_clips' },
+  { name: 'Core Bluetooth', tagline: 'BLE central + peripheral', description: 'Scan, connect, read/write/notify, advertise services, background state restoration.', url: 'https://developer.apple.com/documentation/corebluetooth' },
+  { name: 'Pow', tagline: 'Widget + app animations', description: 'A library of SwiftUI transitions and effects that work inside widgets and Live Activities.', url: 'https://github.com/EmergeTools/Pow' },
+]} />
+
+## Exercises
+
+1. Build a configurable Lock Screen widget (`accessoryRectangular`) that
+   shows the next event from a user-selected calendar. Use
+   `AppIntentTimelineProvider` + a `WidgetConfigurationIntent` so the user
+   picks the calendar from the widget's long-press menu.
+2. Write a Core Bluetooth scanner that discovers any peripheral advertising
+   the Battery Service (`0x180F`), connects, reads the Battery Level
+   characteristic (`0x2A19`), and displays the value. Handle Bluetooth being
+   off, unauthorized, and the peripheral disconnecting mid-read.
+
+## Next module
+
+Continue to **[Module 09 · Testing & Quality Assurance](/docs/testing-quality/overview)** —
+unit, UI, performance, and accessibility testing at every layer.

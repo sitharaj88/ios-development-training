@@ -1,0 +1,226 @@
+---
+id: topic-3-platforms-accessibility
+title: Topic 3 · watchOS, visionOS & Accessibility
+sidebar_label: 3 · Platforms & A11y
+description: Apple Watch companion apps, visionOS spatial design, tvOS highlights, and the accessibility engineering practices that keep your app usable for everyone.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 12 · Topic 3 · 50 min</span>
+  <h2>Beyond the iPhone</h2>
+  <div>
+    The same SwiftUI code compiles for Apple Watch, Vision Pro, and Apple TV —
+    but each platform has its own interaction model, and your app is only as
+    inclusive as its VoiceOver experience. This topic is the survey across
+    Apple's full device lineup and the accessibility discipline that ties them
+    together.
+  </div>
+</div>
+
+## watchOS — the companion you actually ship
+
+Two shapes of watchOS app:
+
+- **Companion app** — requires an iPhone app installed and running once for setup. Talks to iPhone via WatchConnectivity.
+- **Independent app** — installs, launches, and runs without an iPhone. Required if you want to ship to the Apple Watch App Store as a standalone experience (fitness, music, quick utilities).
+
+```swift
+import WatchConnectivity
+
+final class Phone: NSObject, WCSessionDelegate {
+    static let shared = Phone()
+    private override init() { super.init() }
+
+    func start() {
+        guard WCSession.isSupported() else { return }
+        WCSession.default.delegate = self
+        WCSession.default.activate()
+    }
+
+    func send(context: [String: Any]) {
+        try? WCSession.default.updateApplicationContext(context)  // replaces last value; perfect for "current state"
+    }
+
+    func session(_ session: WCSession, activationDidCompleteWith state: WCSessionActivationState, error: Error?) {}
+    func sessionDidBecomeInactive(_ session: WCSession) {}
+    func sessionDidDeactivate(_ session: WCSession) { WCSession.default.activate() }
+}
+```
+
+Three transport modes you'll actually use:
+
+- `updateApplicationContext` — replaces the last state, delivered in background. Use for *the current picture* (balance, steps today).
+- `transferUserInfo` — FIFO queue, guaranteed delivery. Use for *events* (workout ended, budget updated).
+- `sendMessage` — live-only, requires both apps reachable. Use for interactive features.
+
+### Complications and Smart Stack widgets
+
+Both watchOS complications (watch-face snippets) and iOS Lock Screen / Smart
+Stack widgets are now authored with **WidgetKit + SwiftUI**. One `TimelineProvider`
+can feed both. Prioritise a single-line headline + a `Gauge` — watchOS faces
+and Smart Stack cells have very little real estate.
+
+## visionOS — spatial computing, SwiftUI-first
+
+visionOS runs SwiftUI + RealityKit. The mental model:
+
+- **Window** — a flat 2D panel you can place anywhere. Your iPad app is this by default.
+- **Volume** — a bounded 3D container. Think "a glass box on a table."
+- **ImmersiveSpace** — unbounded 3D. Your content surrounds the user (think Galaxy app).
+
+```swift
+@main
+struct MuseumApp: App {
+    var body: some Scene {
+        WindowGroup(id: "Catalog") { CatalogView() }
+            .windowStyle(.plain)
+
+        WindowGroup(id: "Artifact", for: Artifact.ID.self) { $id in
+            ArtifactDetailView(id: id)
+        }
+        .windowStyle(.volumetric)
+        .defaultSize(width: 0.4, height: 0.4, depth: 0.4, in: .meters)
+
+        ImmersiveSpace(id: "Tour") {
+            RealityView { content in
+                content.add(try! await Entity(named: "GalleryScene", in: realityKitContentBundle))
+            }
+        }
+        .immersionStyle(selection: .constant(.mixed), in: .mixed, .progressive, .full)
+    }
+}
+```
+
+**Input:** the user's gaze selects, and a pinch (thumb + index finger tap)
+confirms. `.onTapGesture` works everywhere; hover effects are automatic when
+you use standard SwiftUI controls. Custom 3D entities need `InputTargetComponent`
+and `CollisionComponent` to be tappable.
+
+### visionOS vs iPadOS mental model
+
+<ComparisonCard
+  left={{
+    label: 'iPadOS',
+    title: 'Screen-based',
+    variant: 'neutral',
+    points: [
+      'Fixed 2D canvas with known bounds',
+      'Finger touches land on pixels you control',
+      'Adaptive layout via size classes and .regular / .compact',
+      'UIKit interop straightforward',
+    ],
+  }}
+  right={{
+    label: 'visionOS',
+    title: 'Space-based',
+    variant: 'neutral',
+    points: [
+      'Windows / Volumes / ImmersiveSpaces with physical sizes in meters',
+      'Gaze picks the target; pinch confirms. No cursor.',
+      'Depth and occlusion matter — test with real headset',
+      'RealityKit required for 3D; SwiftUI for 2D surfaces',
+    ],
+  }}
+/>
+
+## tvOS — the remote-first platform
+
+Your SwiftUI app compiles for tvOS with minor tweaks:
+
+- Everything is focus-driven. Test with the simulator's remote.
+- Use `.focusable()` on custom hit targets; built-in controls handle it.
+- Long-form content dominates; lead with big artwork and a short trailer.
+
+Most teams adding tvOS are already shipping on iOS — keep business logic in
+shared SPM packages and write a thin SwiftUI layer per platform.
+
+## Accessibility is engineering, not polish
+
+<Callout kind="warning" title="Accessibility is not a checkbox, it's an engineering discipline">
+If you ship a feature that doesn't work with VoiceOver, you haven't shipped it — you've shipped a broken feature for millions of users. Build a11y into PR review, CI linting, and QA passes from day one. Retrofitting it is always 10x more expensive than doing it right the first time.
+</Callout>
+
+### VoiceOver — the SwiftUI levers
+
+```swift
+Image(systemName: "trash")
+    .accessibilityLabel("Delete")
+    .accessibilityHint("Removes this item from your cart")
+    .accessibilityAddTraits(.isButton)
+
+HStack {
+    Image("avatar-elena")
+    Text("Elena")
+    Text("12:34 PM")
+}
+.accessibilityElement(children: .combine)
+.accessibilityLabel("Message from Elena at 12:34 PM")
+```
+
+- `accessibilityLabel` — **what** the element is (noun). Keep it short.
+- `accessibilityValue` — the current value (e.g., a slider's 47%).
+- `accessibilityHint` — **what tapping does** (verb phrase). Optional, not verbose.
+- `accessibilityAddTraits` — `.isButton`, `.isHeader`, `.isSelected`, etc.
+- `accessibilityElement(children: .combine | .ignore | .contain)` — group a composite cell into one readable element.
+
+### Dynamic Type
+
+Use the system text styles (`.body`, `.headline`, `.caption`) and `@ScaledMetric`
+for anything measured in points:
+
+```swift
+@ScaledMetric(relativeTo: .body) private var iconSize = 24
+Image(systemName: "star.fill").font(.system(size: iconSize))
+```
+
+Test at the largest accessibility size (`AX5`). If text truncates or layouts
+break, redesign — don't clamp the size.
+
+### Reduced Motion, Reduced Transparency, Increased Contrast
+
+```swift
+@Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+withAnimation(reduceMotion ? .none : .spring) { isExpanded.toggle() }
+```
+
+Similar environment keys: `\.accessibilityReduceTransparency`,
+`\.accessibilityDifferentiateWithoutColor`, `\.colorSchemeContrast`.
+
+### Voice Control
+
+Voice Control uses accessibility labels as voice targets. If your buttons all
+have clear `accessibilityLabel`s, Voice Control users say "Tap Delete" and it
+just works. If labels are missing, Voice Control falls back to numbered
+overlays — workable, but clunky.
+
+### Audit with Accessibility Inspector
+
+Bundled with Xcode (`Xcode → Open Developer Tool → Accessibility Inspector`).
+Run the audit on a live simulator — it flags missing labels, low-contrast
+colours, and elements that don't respond to VoiceOver. Fix every issue before
+shipping.
+
+## Accessibility checklist — the living document
+
+<FeatureGrid features={[
+  { title: 'Every actionable element has a label', description: 'Buttons, icon buttons, tappable images, custom gesture targets. If VoiceOver can\'t read it, users can\'t use it.' },
+  { title: 'Dynamic Type up to AX5', description: 'No truncation, no clipped layouts, no overlapping text. Scroll where needed.' },
+  { title: 'Contrast ratio ≥ 4.5:1 for body text', description: 'Use Accessibility Inspector\'s contrast audit. Pay attention to placeholder text and disabled states.' },
+  { title: 'No colour-only signals', description: 'Red/green states get an icon or text cue as well. Differentiate Without Color users depend on this.' },
+  { title: 'Keyboard and Switch Control navigable', description: 'Every focusable element reachable in logical order. Custom controls declare accessibilityTraits.' },
+  { title: 'Motion + transparency respect settings', description: 'No parallax for reduceMotion users; no blurred backgrounds for reduceTransparency users.' },
+  { title: 'Haptics reinforce, never replace', description: 'Haptic taps complement visual / auditory cues; they must not be the only channel of feedback.' },
+  { title: 'Images have descriptions', description: 'Decorative images: .accessibilityHidden(true). Content images: accessibilityLabel describing the content, not the file name.' },
+]} />
+
+## Exercises
+
+1. **watchOS companion from scratch.** Add a watchOS target to an existing iOS app. Use `updateApplicationContext` to push the current state (e.g., today's step count) from the phone, and display it on the watch. Verify it updates when the phone app backgrounds.
+2. **Accessibility audit + fixes.** Pick any screen in your current app. Run Accessibility Inspector's audit, enable VoiceOver on a device, and navigate the screen end-to-end with your eyes closed. Fix every gap. Document the before/after list.
+
+## Next module
+
+Continue to **[Module 13 · Package Management & Collaboration](/docs/package-collaboration/overview)** — SPM, Git workflows, and CI/CD for shipping with a team.

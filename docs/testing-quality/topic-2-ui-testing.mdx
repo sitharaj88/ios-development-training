@@ -1,0 +1,274 @@
+---
+id: topic-2-ui-testing
+title: Topic 2 · UI, Snapshot & Integration Tests
+sidebar_label: 2 · UI & Snapshot
+description: XCUITest with accessibility identifiers, page objects, swift-snapshot-testing across devices and traits, URLProtocol-mocked integration tests, and CI.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 09 · Topic 2 · ~2 hours</span>
+  <h2>Cover the seams unit tests can't see</h2>
+  <div>
+    UI, snapshot, and integration tests guard the parts of the app that only
+    fail when composed: navigation, layout, networking, and accessibility.
+    This topic shows how to write them so they stay fast, readable, and
+    resistant to cosmetic churn.
+  </div>
+</div>
+
+## Where each test type earns its keep
+
+<ComparisonCard
+  left={{
+    label: 'XCUITest',
+    title: 'End-to-end flow',
+    variant: 'neutral',
+    points: [
+      'Launches the app in the simulator',
+      'Accessibility tree is the selector language',
+      'Slow (seconds per test) — keep to happy paths',
+      'Best for: sign-in, checkout, onboarding, one per flow',
+    ],
+  }}
+  right={{
+    label: 'Snapshot + Integration',
+    title: 'Targeted composition tests',
+    variant: 'new',
+    points: [
+      'Snapshot: pixel-diff a rendered view across traits',
+      'Integration: real URLSession hitting URLProtocol stubs',
+      'Both run in milliseconds, in the unit test target',
+      'Catch layout + contract regressions without a simulator boot',
+    ],
+  }}
+/>
+
+## XCUITest fundamentals
+
+```swift
+import XCTest
+
+final class CheckoutFlowUITests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        continueAfterFailure = false
+    }
+
+    func test_checkout_happyPath() {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTesting", "-seedCart", "2"]
+        app.launchEnvironment["API_BASE_URL"] = "http://localhost:8080"
+        app.launch()
+
+        app.buttons["cart.checkout"].tap()
+        app.textFields["address.line1"].tap()
+        app.textFields["address.line1"].typeText("1 Apple Park Way")
+        app.buttons["address.continue"].tap()
+
+        let confirmation = app.staticTexts["order.confirmation"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+    }
+}
+```
+
+Key primitives: `XCUIApplication`, `launchArguments` / `launchEnvironment` to
+flip feature flags for testing, element queries (`buttons`, `textFields`,
+`staticTexts`), interaction methods (`tap`, `swipeUp`, `typeText`), and
+`waitForExistence(timeout:)` — **never** use `sleep()` in a UI test.
+
+<Callout kind="warning" title="Accessibility identifiers are your API">
+Never locate elements by their visible label ("Continue") — localization or
+copy tweaks break the test. Tag every interactive SwiftUI view with
+`.accessibilityIdentifier("...")`. Bonus: the same identifiers help VoiceOver
+users, so accessibility and testability share one investment.
+</Callout>
+
+```swift
+Button("Continue") { vm.submit() }
+    .accessibilityIdentifier("address.continue")
+```
+
+## Page-object pattern
+
+Raw `app.buttons["..."]` calls everywhere produces unreadable tests that all
+break together when the UI shifts. Wrap each screen in a page object:
+
+```swift
+struct CheckoutScreen {
+    let app: XCUIApplication
+
+    var checkoutButton: XCUIElement { app.buttons["cart.checkout"] }
+    var addressField:   XCUIElement { app.textFields["address.line1"] }
+    var continueButton: XCUIElement { app.buttons["address.continue"] }
+
+    @discardableResult
+    func enterAddress(_ text: String) -> Self {
+        addressField.tap()
+        addressField.typeText(text)
+        return self
+    }
+
+    func tapContinue() -> ConfirmationScreen {
+        continueButton.tap()
+        return ConfirmationScreen(app: app)
+    }
+}
+
+struct ConfirmationScreen {
+    let app: XCUIApplication
+    var orderText: XCUIElement { app.staticTexts["order.confirmation"] }
+
+    func assertVisible(file: StaticString = #file, line: UInt = #line) {
+        XCTAssertTrue(orderText.waitForExistence(timeout: 5), file: file, line: line)
+    }
+}
+
+// The test reads like product speak:
+func test_checkoutHappyPath() {
+    let app = XCUIApplication(); app.launch()
+    CheckoutScreen(app: app)
+        .enterAddress("1 Apple Park Way")
+        .tapContinue()
+        .assertVisible()
+}
+```
+
+When a selector changes you update one struct, not fifty tests.
+
+## Snapshot testing with swift-snapshot-testing
+
+[Point-Free's swift-snapshot-testing](https://github.com/pointfreeco/swift-snapshot-testing)
+ships as a SwiftPM dependency in your test target. First run records a PNG;
+every run after diffs against it.
+
+```swift
+import SnapshotTesting
+import SwiftUI
+import XCTest
+
+final class ProductCardSnapshotTests: XCTestCase {
+    func test_productCard_iPhone15_lightAndDark() {
+        let view = ProductCard(product: .sample)
+
+        assertSnapshot(
+            of: view,
+            as: .image(layout: .device(config: .iPhone13)),
+            named: "light"
+        )
+        assertSnapshot(
+            of: view.environment(\.colorScheme, .dark),
+            as: .image(layout: .device(config: .iPhone13)),
+            named: "dark"
+        )
+    }
+
+    func test_productCard_acrossTraits() {
+        let view = ProductCard(product: .sample)
+        let traits: [(String, (any View) -> any View)] = [
+            ("xxl",  { AnyView($0).environment(\.dynamicTypeSize, .accessibility3) }),
+            ("rtl",  { AnyView($0).environment(\.layoutDirection, .rightToLeft) }),
+            ("dark", { AnyView($0).environment(\.colorScheme, .dark) }),
+        ]
+        for (name, wrap) in traits {
+            assertSnapshot(
+                of: wrap(view),
+                as: .image(layout: .device(config: .iPhone13)),
+                named: name
+            )
+        }
+    }
+}
+```
+
+To record new baselines, wrap the assertion in `withSnapshotTesting(record: .all) { }`
+or toggle the per-call `record:` parameter for one run, then commit the PNGs.
+
+<Callout kind="tip" title="Snapshot discipline">
+Commit snapshots to git — reviewers should see pixel diffs in the pull
+request. Keep them scoped to small reusable components (cards, rows, empty
+states), not entire screens, or every copy change becomes a snapshot churn.
+</Callout>
+
+## Integration tests with URLProtocol
+
+Integration tests run in the unit test target, talk to a real `URLSession`,
+and intercept the network at `URLProtocol`. You exercise the actual decoder,
+request builder, and retry logic without a server.
+
+```swift
+final class StubURLProtocol: URLProtocol {
+    static var responder: ((URLRequest) -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for r: URLRequest) -> URLRequest { r }
+
+    override func startLoading() {
+        guard let (response, data) = Self.responder?(request) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+@Test func productService_decodesListEndpoint() async throws {
+    StubURLProtocol.responder = { request in
+        #expect(request.url?.path == "/v1/products")
+        let json = #"[{"id":"1","title":"Cap","price":9.99}]"#.data(using: .utf8)!
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200,
+            httpVersion: nil, headerFields: ["Content-Type": "application/json"]
+        )!
+        return (response, json)
+    }
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [StubURLProtocol.self]
+    let service = ProductService(session: URLSession(configuration: config))
+
+    let products = try await service.fetchAll()
+    #expect(products.count == 1)
+    #expect(products.first?.title == "Cap")
+}
+```
+
+One fixture, full request-to-model pipeline covered.
+
+## CI strategy
+
+<StepList
+  steps={[
+    { title: 'Every PR runs unit + snapshot tests', description: 'Unit target boots in seconds. Block merges on red. Run on macOS 14+ runners with the matching Xcode version in xcversion.' },
+    { title: 'Nightly runs the full UI suite', description: 'XCUITest adds minutes and flakes on resource-starved runners. Run it nightly against main and post failures to Slack.' },
+    { title: 'Cache DerivedData and SPM', description: 'xcodebuild -derivedDataPath .ddata plus actions/cache on ~/Library/Caches/org.swift.swiftpm halves cold builds.' },
+    { title: 'Upload coverage + snapshots as artifacts', description: 'On failure, attach the snapshot diff PNGs and xcresult so reviewers see the break without re-running locally.' },
+  ]}
+/>
+
+Xcode Cloud is the zero-setup choice if you're already in App Store Connect;
+GitHub Actions with `xcodebuild test` is the portable standard.
+
+## Recommended libraries
+
+<LibraryGrid libraries={[
+  { name: 'swift-snapshot-testing', tagline: 'Image & text snapshots', description: 'Point-Free\'s de-facto snapshot library. iOS device configs, trait combos, and text/Json snapshot variants.', url: 'https://github.com/pointfreeco/swift-snapshot-testing', recommended: true },
+  { name: 'Quick & Nimble', tagline: 'BDD + rich matchers', description: 'describe/it spec syntax with expressive Nimble matchers. Useful if your team prefers BDD phrasing.', url: 'https://github.com/Quick/Quick' },
+  { name: 'Cuckoo', tagline: 'Code-gen mocks', description: 'Generates mocks for Swift protocols. Most teams don\'t need it — plain struct stubs win — but handy for legacy codebases.', url: 'https://github.com/Brightify/Cuckoo' },
+  { name: 'Xcode Cloud', tagline: 'CI from Apple', description: 'Zero-setup CI tied to App Store Connect. 25 compute hours/month free for paid developer accounts.', url: 'https://developer.apple.com/xcode-cloud/' },
+]} />
+
+## Exercises
+
+1. Convert one existing XCUITest file to use a page-object per screen and
+   confirm the test body now reads top-to-bottom like product copy.
+2. Add snapshot tests for three shared components across light, dark, RTL,
+   and `.accessibility3` dynamic type. Commit the PNG baselines and review
+   them in the PR.
+
+## Next module
+
+Continue to **[Module 10 · Performance & Optimization](/docs/performance/overview)** — make it fast, measurably.

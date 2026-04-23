@@ -1,0 +1,363 @@
+---
+id: topic-3-optionals-safety
+title: "Topic 3 · Optionals & Type Safety"
+sidebar_label: "3 · Optionals & Safety"
+description: Optionals, optional chaining, nil-coalescing, Result, throws, and do/catch — the tools that turn runtime crashes into compile errors in Swift.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 3 · Optionals & Safety · ~90 min</span>
+  <h2>Nil is a type, not a pointer</h2>
+  <div>
+    Swift's optional system is the reason you don't get null pointer crashes in
+    well-written Swift. It forces you to deal with absence explicitly, at
+    compile time, every time. This topic is about using it fluently — and
+    never cheating with the bang.
+  </div>
+</div>
+
+## What this topic covers
+
+<StepList
+  steps={[
+    { title: 'What Optional actually is', description: 'An enum — .none or .some(Wrapped) — with syntax sugar.' },
+    { title: 'Unwrapping safely', description: 'if let, guard let, optional chaining, nil-coalescing.' },
+    { title: 'When (and whether) to force unwrap', description: 'The defensible cases — and the ones that are bugs.' },
+    { title: 'Map / flatMap on Optional', description: 'Transforming values without unwrapping manually.' },
+    { title: 'Error handling', description: 'Result, throws, try / try? / try!, do/catch.' },
+  ]}
+/>
+
+## `Optional<T>` is an enum
+
+Under the sugar, `Int?` is `Optional<Int>` — a two-case enum the standard
+library defines like this:
+
+```swift
+enum Optional<Wrapped> {
+    case none
+    case some(Wrapped)
+}
+```
+
+`nil` is just syntax for `.none`. `5` as an `Int?` is syntax for `.some(5)`.
+The `?` suffix and bare `nil` are the only things special about optionals —
+everything else falls out of normal enum behavior.
+
+```swift
+let x: Int? = 5              // .some(5)
+let y: Int? = nil            // .none
+
+switch x {
+case .none:        print("no value")
+case .some(let v): print("got \(v)")
+}
+```
+
+You rarely write that `switch` — the syntactic shortcuts below are nicer —
+but knowing it's an enum demystifies the rest.
+
+<Callout kind="info" title="Optional is a type, not a modifier">
+<code>String?</code> and <code>String</code> are different types. You cannot
+pass a <code>String?</code> where a <code>String</code> is expected — the
+compiler refuses. That refusal is the whole point.
+</Callout>
+
+## Safe unwrapping
+
+### `if let`
+
+```swift
+let maybeName: String? = loadName()
+
+if let name = maybeName {
+    print("Hi, \(name)")
+}
+
+// Shorthand (Swift 5.7+) — omit the RHS when the name matches
+if let maybeName {
+    print("Hi, \(maybeName)")     // shadowed as non-optional
+}
+```
+
+### `guard let`
+
+Use `guard` for early exit so the happy path stays un-indented:
+
+```swift
+func greet(_ maybeName: String?) {
+    guard let name = maybeName, !name.isEmpty else {
+        print("anonymous")
+        return
+    }
+    // name is a non-optional String for the rest of the function
+    print("Hi, \(name)")
+}
+```
+
+Multiple bindings chain with commas — any `nil` sends you to the `else`:
+
+```swift
+guard
+    let url = URL(string: raw),
+    let data = try? Data(contentsOf: url),
+    let json = try? JSONSerialization.jsonObject(with: data)
+else { return }
+```
+
+### Optional chaining
+
+Call methods and read properties on an optional; if any link is `nil`, the
+whole expression short-circuits to `nil`.
+
+```swift
+let streetName = user?.address?.street?.name    // String?
+let upper = user?.name.uppercased()             // String?
+let count = array.first?.count ?? 0             // Int
+```
+
+### Nil-coalescing `??`
+
+Provide a default when an optional is `nil`:
+
+```swift
+let display = maybeName ?? "anonymous"
+let port    = config.port ?? 8080
+```
+
+Chain them:
+
+```swift
+let addr = primary ?? fallback ?? "127.0.0.1"
+```
+
+## Force unwrap `!` — the escape hatch
+
+`value!` returns `value` if it's `.some`, and **crashes** if it's `.none`.
+
+```swift
+let n: Int? = Int("42")
+let v = n!                     // ok here, but...
+let m: Int? = Int("forty-two")
+let w = m!                     // 💥 fatalError
+```
+
+<Callout kind="warning" title="Don't use ! as a shortcut">
+Every <code>!</code> is a promise to the reader: <em>"this can never be
+nil here."</em> If that promise is wrong, the app crashes. Valid uses are
+narrow — IBOutlets (the framework populates them before your code runs),
+hard-coded test fixtures, and invariants enforced elsewhere. Everything else
+should be <code>if let</code>, <code>guard let</code>, or <code>??</code>.
+If you're typing <code>!</code> because the compiler's complaining, you're
+papering over a bug.
+</Callout>
+
+### Implicitly unwrapped optionals (`T!`)
+
+```swift
+var name: String! = "Ada"      // optional storage, auto-unwraps on read
+print(name.count)              // crashes if nil
+```
+
+Only defensible on IBOutlets and a handful of two-phase initialization
+patterns. Modern Swift code almost never declares new ones.
+
+## Before / after — the case for safe unwrapping
+
+<ComparisonCard
+  left={{
+    label: 'Crash-prone',
+    title: 'Unwraps everything with !',
+    variant: 'old',
+    points: [
+      'Crashes on any unexpected input',
+      'No signal to the caller that failure is possible',
+      'Hides bugs behind "works on my device"',
+      'Impossible to reason about at call sites',
+    ],
+  }}
+  right={{
+    label: 'Safe',
+    title: 'Propagates absence honestly',
+    variant: 'new',
+    points: [
+      'Returns Optional or throws on failure',
+      'Caller must handle the nil / error path',
+      'Compiler enforces every code path',
+      'Trivially testable',
+    ],
+  }}
+/>
+
+A legacy function that crashes on bad input:
+
+```swift
+// crash-prone
+func avatarURL(for user: User) -> URL {
+    return URL(string: user.avatarString!)!
+}
+```
+
+Converted to safe, honest code:
+
+```swift
+// safe
+func avatarURL(for user: User) -> URL? {
+    guard let raw = user.avatarString,
+          let url = URL(string: raw)
+    else { return nil }
+    return url
+}
+
+// or — if the caller wants to know *why* it failed
+enum AvatarError: Error { case missingString, invalidURL }
+
+func avatarURL(for user: User) throws -> URL {
+    guard let raw = user.avatarString else { throw AvatarError.missingString }
+    guard let url = URL(string: raw) else { throw AvatarError.invalidURL }
+    return url
+}
+```
+
+## `Optional.map` and `flatMap`
+
+Transform a wrapped value without unwrapping by hand.
+
+```swift
+let raw: String? = "42"
+
+let n1 = raw.map { Int($0) }         // Int??   ← nested optional
+let n2 = raw.flatMap { Int($0) }     // Int?    ← flattened
+```
+
+Use `map` when the transform returns a non-optional; `flatMap` when the
+transform itself returns `Optional`.
+
+## Pattern matching on optionals
+
+```swift
+let value: Int? = 5
+
+if case .some(let v) = value { print(v) }
+
+switch value {
+case .some(let v) where v > 0: print("positive \(v)")
+case .some(0):                 print("zero")
+case .some(let v):             print("negative \(v)")
+case .none:                    print("nothing")
+}
+```
+
+You'll reach for this inside `for case let x? in` loops over arrays of
+optionals:
+
+```swift
+let xs: [Int?] = [1, nil, 2, nil, 3]
+for case let x? in xs { print(x) }     // 1, 2, 3
+```
+
+## Errors — `throws`, `Result`, `try`
+
+Optionals model "value or no value." Errors model "value or here's *why* not."
+
+### Throwing functions
+
+```swift
+enum LoadError: Error {
+    case notFound
+    case invalidFormat(reason: String)
+}
+
+func loadConfig(from path: String) throws -> Config {
+    guard FileManager.default.fileExists(atPath: path) else {
+        throw LoadError.notFound
+    }
+    // ...
+    return Config()
+}
+```
+
+### `try`, `try?`, `try!`
+
+```swift
+// propagate
+let config = try loadConfig(from: path)           // caller must handle
+
+// convert to optional
+let maybe = try? loadConfig(from: path)           // Config?  — error becomes nil
+
+// crash on failure (same warning as force unwrap applies)
+let forced = try! loadConfig(from: bundledPath)
+```
+
+### `do / catch`
+
+```swift
+do {
+    let config = try loadConfig(from: path)
+    apply(config)
+} catch LoadError.notFound {
+    showFirstRunWizard()
+} catch LoadError.invalidFormat(let reason) {
+    log("bad config: \(reason)")
+} catch {
+    log("unknown error: \(error)")
+}
+```
+
+Pattern-matching on error cases makes recovery specific and honest.
+
+### `Result<Success, Failure>`
+
+```swift
+enum Result<Success, Failure: Error> {
+    case success(Success)
+    case failure(Failure)
+}
+```
+
+Useful when you need to store or pass an outcome that may not be consumed
+immediately — callback-based APIs, caching, or crossing async boundaries
+without `throws`:
+
+```swift
+func fetch(_ url: URL, then: @escaping (Result<Data, Error>) -> Void) {
+    URLSession.shared.dataTask(with: url) { data, _, err in
+        if let err { then(.failure(err)); return }
+        then(.success(data ?? Data()))
+    }.resume()
+}
+```
+
+Modern Swift prefers `async throws` over `Result`-returning callbacks (Module
+12), but `Result` still shows up in bridging code and public APIs.
+
+## Key takeaways
+
+- **`Optional<T>` is an enum.** `nil` is `.none`; `!` is a partial function
+  that crashes on `.none`.
+- **Prefer `if let` / `guard let` / `??`.** They cover 99% of cases.
+- **Force-unwrap is a claim, not a shortcut.** If the claim is wrong, you
+  crash. Reserve it for boundaries like IBOutlets.
+- **Use `throws` when the caller deserves to know why** something failed;
+  use `Optional` when "absent" is the whole story.
+- **`try?` converts errors to `nil`** when you don't care about the reason.
+
+## Practice exercises
+
+1. Implement `func parseAge(_ raw: String?) -> Int?` that returns `nil` for
+   `nil`, empty, non-numeric, or out-of-range (`< 0` or `> 150`) input.
+2. Convert this crashable helper into an `async throws -> UIImage` function:
+   ```swift
+   func avatar(url: String) -> UIImage {
+       UIImage(data: try! Data(contentsOf: URL(string: url)!))!
+   }
+   ```
+3. Write `func firstValid<T>(_ strings: [String], as: (String) -> T?) -> T?`
+   that returns the first non-nil transform, using `compactMap` and `.first`.
+
+## Next
+
+Continue to **[Topic 4 · Generics, Protocols, Async](/docs/swift-foundation/topic-4-advanced)** — the abstractions that make Swift code reusable without inheritance.

@@ -1,0 +1,305 @@
+---
+id: topic-1-spm-git-ci
+title: Topic 1 · SPM, Git Workflows & CI
+sidebar_label: 1 · SPM, Git & CI
+description: Swift Package Manager in depth, modular multi-package apps, iOS-safe Git workflows, Xcode Cloud, Fastlane, and a GitHub Actions pipeline you can copy.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 13 · Topic 1 · 60 min</span>
+  <h2>The infrastructure that lets a team of 10 ship like a team of 3</h2>
+  <div>
+    Package management, Git hygiene, and CI are not glamorous, but they decide
+    whether a five-person iOS team spends Fridays shipping or spends them
+    merging project.pbxproj. This topic is the canonical setup: SPM-first
+    modularization, trunk-based Git, and automated releases.
+  </div>
+</div>
+
+## Swift Package Manager — the full shape
+
+A `Package.swift` manifest describes:
+
+- **Platforms** — minimum deployment targets.
+- **Products** — what you expose to consumers (libraries, executables, plugins).
+- **Dependencies** — other packages, by Git URL + version rule.
+- **Targets** — the actual sources. Each target is one of:
+  - `.target` — regular Swift/C source module.
+  - `.testTarget` — XCTest target, not shipped.
+  - `.binaryTarget` — XCFramework (local path or remote zip + checksum).
+  - `.executableTarget` — command-line tool.
+  - `.plugin` — build-tool or command plugin.
+
+### A real Package.swift
+
+```swift
+// swift-tools-version:5.10
+import PackageDescription
+
+let package = Package(
+    name: "FeatureExpenses",
+    defaultLocalization: "en",
+    platforms: [.iOS(.v17), .macOS(.v14)],
+    products: [
+        .library(name: "FeatureExpenses", targets: ["FeatureExpenses"]),
+        .library(name: "FeatureExpensesUI", targets: ["FeatureExpensesUI"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
+        .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.17.0"),
+        .package(path: "../CoreNetworking"),          // local package, sibling on disk
+    ],
+    targets: [
+        .target(
+            name: "FeatureExpenses",
+            dependencies: [
+                .product(name: "Collections", package: "swift-collections"),
+                .product(name: "CoreNetworking", package: "CoreNetworking"),
+            ],
+            resources: [
+                .process("Resources"),                 // .xcstrings, .json seeds, assets
+            ]
+        ),
+        .target(
+            name: "FeatureExpensesUI",
+            dependencies: ["FeatureExpenses"]
+        ),
+        .testTarget(
+            name: "FeatureExpensesTests",
+            dependencies: [
+                "FeatureExpenses",
+                .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
+            ],
+            resources: [.copy("__Snapshots__")]
+        ),
+    ]
+)
+```
+
+Key moves:
+
+- **Split `FeatureExpenses` (logic) from `FeatureExpensesUI` (SwiftUI).** Tests and previews run faster; the logic layer can be reused in widgets or watchOS without importing UIKit.
+- **Local packages** (`.package(path:)`) let you share code across multiple app targets in the same monorepo without publishing to Git.
+- **`.process("Resources")`** runs localizations, asset catalogs, and JSON through the Swift build pipeline; `.copy(...)` preserves directory structure verbatim (needed for snapshot tests).
+
+## Modular multi-package apps
+
+The winning pattern for apps > 50k LOC:
+
+```text
+MyApp.xcodeproj               ← thin app shell (App entry, DI root, minimum glue)
+Packages/
+  CoreNetworking/             ← shared plumbing
+  CorePersistence/
+  FeatureExpenses/            ← a vertical slice
+  FeatureExpensesUI/
+  FeatureReports/
+  FeatureReportsUI/
+  DesignSystem/               ← tokens, shared SwiftUI components
+```
+
+The app target's only source file is `MyApp.swift` — everything else lives in
+packages. Build an individual feature in isolation via its own scheme (Xcode
+auto-generates one per package product), which makes SwiftUI previews and test
+loops instant.
+
+<Callout kind="tip" title="Modularize early — it's the single biggest productivity multiplier on teams >2">
+Teams that wait until "we'll modularize after v1" always regret it. The cost of extracting a feature from a monolith rises quadratically with team size. Start with at least `Core*` + `Feature*` packages on day one, even for a solo codebase — you'll thank yourself at month six.
+</Callout>
+
+## CocoaPods — when you still need it
+
+SPM is the default. Reach for CocoaPods only when:
+
+- A vendor SDK ships **only** as a Pod (increasingly rare; most vendors now ship XCFrameworks).
+- You need a post-install hook to patch Xcode build settings across every dependency (e.g., disable bitcode on old SDKs).
+
+When you do use CocoaPods, commit the `Podfile.lock` but not the `Pods/`
+directory. Add `cd ios && pod install` to your CI's setup phase.
+
+## Git workflow that survives iOS
+
+### The .gitignore that matters
+
+```gitignore
+# Xcode user state — never commit
+**/xcuserdata/
+**/*.xcuserstate
+*.xcscheme            # shared schemes are committed under xcshareddata/
+
+# Build output
+DerivedData/
+build/
+*.xcarchive
+
+# Dependency caches
+.build/
+.swiftpm/
+Pods/
+Carthage/Build/
+
+# Secrets
+*.p8
+*.p12
+fastlane/.env.*
+```
+
+Commit `xcshareddata/xcschemes/` for schemes the whole team uses. Personal
+schemes, breakpoints, and window layout live in `xcuserdata/` — ignore
+relentlessly.
+
+### The `project.pbxproj` merge conflict problem
+
+Every Xcode project file change touches the same file. Two developers adding
+files on the same day = merge conflict. Three approaches in increasing
+robustness:
+
+1. **Modularize aggressively.** A file added to a Swift Package does not touch `project.pbxproj` — because the package manifest lives in its own repo / directory. This alone eliminates 80% of conflicts.
+2. **XcodeGen.** A YAML file describes the project; `xcodegen` regenerates `project.pbxproj` from it. Commit the YAML, regenerate locally. Conflicts happen on human-readable YAML, not XML soup.
+3. **Tuist.** A Swift DSL describes the project; supports caching, micro-features, and generating workspaces that span many apps. Heavier, but pays off at scale.
+
+### Branching model
+
+```text
+main                    (always releasable, protected, squash-merge only)
+ ├─ feat/expenses-filter  (short-lived; PR → squash-merge → delete)
+ ├─ fix/crash-on-launch
+ └─ release/2.4           (only cut when branching off a specific build)
+```
+
+Trunk-based with feature flags is simpler and faster than GitFlow for product
+apps. Keep PRs under ~400 lines diff; ship behind a flag if the feature isn't
+done.
+
+## Xcode Cloud — Apple's CI
+
+- Workflows defined in App Store Connect, triggered by Git events.
+- **Start conditions** — branch, tag, pull request, schedule.
+- **Actions** — Build, Test, Analyze, Archive.
+- **Post-actions** — Notify (Slack, email), TestFlight, App Store.
+- Integrated signing — no certificate shuffling.
+- 25 free compute hours per month on the $99 developer membership; paid tiers beyond.
+
+Best fit: you already pay for App Store Connect and want TestFlight uploads
+that Just Work. Weaker fit: complex polyglot pipelines or heavy caching needs.
+
+## Fastlane — the automation Swiss army knife
+
+```ruby
+# fastlane/Fastfile
+default_platform :ios
+
+lane :test do
+  run_tests(scheme: "MyApp", devices: ["iPhone 15"])
+end
+
+lane :beta do
+  ensure_git_status_clean
+  match(type: "appstore", readonly: true)
+  increment_build_number(xcodeproj: "MyApp.xcodeproj")
+  build_app(scheme: "MyApp", export_method: "app-store")
+  upload_to_testflight(skip_waiting_for_build_processing: true,
+                       changelog: File.read("../CHANGELOG-TESTFLIGHT.md"))
+  commit_version_bump(message: "chore: bump build", xcodeproj: "MyApp.xcodeproj")
+  push_to_git_remote
+end
+
+lane :release do
+  match(type: "appstore", readonly: true)
+  build_app(scheme: "MyApp", export_method: "app-store")
+  upload_to_app_store(submit_for_review: true,
+                      automatic_release: true,
+                      force: true)
+end
+```
+
+Three tools you'll lean on:
+
+- `match` — encrypted certificate/profile sync via private Git repo.
+- `gym` / `build_app` — wraps `xcodebuild` with sane defaults.
+- `pilot` / `upload_to_testflight` — TestFlight upload + tester management.
+- `deliver` / `upload_to_app_store` — metadata, screenshots, binary to the App Store.
+
+## GitHub Actions — a real macOS workflow
+
+```yaml
+# .github/workflows/ios.yml
+name: iOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/**/SourcePackages
+            .build
+          key: spm-${{ runner.os }}-${{ hashFiles('**/Package.resolved') }}
+
+      - name: Resolve dependencies
+        run: xcodebuild -resolvePackageDependencies -scheme MyApp
+
+      - name: Lint
+        run: |
+          brew install swiftlint
+          swiftlint --strict
+
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -scheme MyApp \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            -resultBundlePath TestResults.xcresult \
+            -enableCodeCoverage YES | xcbeautify
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults.xcresult
+```
+
+Add a second job (gated on `github.ref == 'refs/heads/main'`) that runs Fastlane
+`beta` with secrets for `APP_STORE_CONNECT_API_KEY` and the `match` git repo
+deploy key.
+
+## Productivity multipliers
+
+<LibraryGrid libraries={[
+  { name: 'Tuist', tagline: 'Generate Xcode projects', description: 'Swift DSL describes workspaces/modules; generates project.pbxproj deterministically. Strong caching.', url: 'https://tuist.io', recommended: true },
+  { name: 'XcodeGen', tagline: 'YAML → .xcodeproj', description: 'Simpler than Tuist; describes the project in YAML. Great first step out of pbxproj merge hell.', url: 'https://github.com/yonaskolb/XcodeGen' },
+  { name: 'Fastlane', tagline: 'Release automation', description: 'match, gym, pilot, deliver — the de-facto iOS automation toolkit. Every team ends up using it.', url: 'https://fastlane.tools', recommended: true },
+  { name: 'Mint', tagline: 'Swift CLI manager', description: 'Installs and pins versions of Swift CLI tools (SwiftLint, SwiftFormat, XcodeGen) per repo.', url: 'https://github.com/yonaskolb/Mint' },
+]} />
+
+## Exercises
+
+1. **Modularize one feature.** Pick a feature in an existing app (Expenses, Settings, whatever). Extract it into two local Swift Packages (`FeatureX` logic + `FeatureXUI`). Verify the app still builds and tests still pass. Note the change in compile time when editing only the UI layer.
+2. **End-to-end CI + beta.** Set up Fastlane `match` (private Git repo for certificates) and a GitHub Actions workflow that runs tests on every PR and uploads to TestFlight when `main` advances. Document the three secrets you configured (`MATCH_PASSWORD`, `APP_STORE_CONNECT_API_KEY`, `MATCH_GIT_DEPLOY_KEY`) and where each is used.
+
+## Continue
+
+- [Swift Cheatsheet](/docs/cheatsheets/swift) — quick syntax reference while you work.
+- [Glossary](/docs/glossary) — every iOS term in one place.

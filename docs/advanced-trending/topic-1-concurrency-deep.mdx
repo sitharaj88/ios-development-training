@@ -1,0 +1,288 @@
+---
+id: topic-1-concurrency-deep
+title: Topic 1 · Swift Concurrency in Depth
+sidebar_label: 1 · Concurrency
+description: The runtime model behind async/await — cooperative threads, actors, Sendable, structured concurrency, AsyncSequence, and the Swift 6 data-race guarantee.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, SwiftConcurrencyDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 12 · Topic 1 · 60 min</span>
+  <h2>From "it compiles" to "it cannot data-race"</h2>
+  <div>
+    Swift Concurrency is not just syntactic sugar for GCD. It is a new runtime,
+    a new type system (Sendable), and — with Swift 6 strict mode — a compiler
+    guarantee that your code is free of data races. This topic covers what's
+    actually happening underneath.
+  </div>
+</div>
+
+## The runtime model
+
+<Diagram
+  title="Swift Concurrency primitives"
+  caption="Tasks are units of work; suspension points release threads; actors serialize mutable state; @MainActor pins work to the UI thread; TaskGroup gives you structured parallelism."
+>
+  <SwiftConcurrencyDiagram />
+</Diagram>
+
+Under the hood Swift Concurrency uses a **cooperative thread pool** sized to the
+number of cores. Tasks are not threads — they are continuations that the runtime
+schedules onto available threads. An `await` is a **suspension point**: the task
+releases its thread, and another task can run on that same thread. This is why
+"thread explosion" (a classic GCD bug where 200 `DispatchQueue.global().async`
+calls spawn 200 threads) cannot happen with `Task {}`.
+
+## GCD vs Swift Concurrency
+
+<ComparisonCard
+  left={{
+    label: 'GCD / DispatchQueue',
+    title: 'The old way',
+    variant: 'old',
+    points: [
+      'Queues are threads (in practice), unbounded in number',
+      'Priority inversion is easy and silent',
+      'No language-level data race protection',
+      'Callback pyramid on anything non-trivial',
+    ],
+  }}
+  right={{
+    label: 'Swift Concurrency',
+    title: 'The new default',
+    variant: 'new',
+    points: [
+      'Cooperative pool, bounded to core count',
+      'Priority inheritance built into Task hierarchies',
+      'Sendable + actors = compile-time race safety',
+      'Linear code with await, structured cancellation',
+    ],
+  }}
+/>
+
+## Tasks and priorities
+
+```swift
+Task(priority: .userInitiated) { await refreshFeed() }
+Task.detached(priority: .background) { await indexEverything() }
+```
+
+Priorities: `.high`, `.userInitiated`, `.medium`, `.utility`, `.background`. A
+child Task inherits its parent's priority. A `Task.detached` does not — use it
+sparingly, because you lose priority propagation, task-local values, and
+actor-context inheritance.
+
+## Actors and isolation
+
+An **actor** is a reference type that serializes access to its mutable state.
+Only one method runs at a time per actor instance.
+
+```swift
+actor ImageCache {
+    private var storage: [URL: Data] = [:]
+
+    func data(for url: URL) async throws -> Data {
+        if let cached = storage[url] { return cached }
+        let (bytes, _) = try await URLSession.shared.data(from: url)
+        storage[url] = bytes
+        return bytes
+    }
+}
+```
+
+Call sites must `await` because the call may suspend (waiting for the actor to
+be free). This is *actor isolation* — it makes concurrent access safe by
+construction.
+
+### Actor reentrancy
+
+Actors are **reentrant**: during an `await` inside an actor method, other
+methods of that actor can run. That is desirable (no deadlocks) but means you
+cannot assume state is unchanged across an `await`:
+
+```swift
+actor Counter {
+    var value = 0
+    func increment() async {
+        let snapshot = value
+        await Task.yield()            // other Counter methods can run here
+        value = snapshot + 1          // LOST UPDATE if increment() was called twice
+    }
+}
+```
+
+Read-modify-write across an `await` is almost always a bug. Capture everything
+you need before suspending, or avoid the suspension.
+
+### @MainActor
+
+`@MainActor` is a global actor that pins work to the main (UI) thread. Mark
+observable objects, view models, and any type that touches UIKit/SwiftUI as
+`@MainActor`:
+
+```swift
+@MainActor
+final class FeedViewModel: ObservableObject {
+    @Published var items: [Item] = []
+
+    func load() async {
+        let fresh = await FeedService().fetch()   // hops off MainActor
+        items = fresh                              // back on MainActor
+    }
+}
+```
+
+## Sendable — the type system for concurrency
+
+A `Sendable` type is one that's safe to share across isolation boundaries.
+Value types (`struct`, `enum`) are implicitly `Sendable` if all their members
+are. Reference types must be:
+
+- marked `final class ... : Sendable` with immutable stored properties, or
+- an `actor` (actors are `Sendable` automatically), or
+- marked `@unchecked Sendable` with manual synchronisation (escape hatch).
+
+<Callout kind="warning" title="Sendable warnings in Swift 5 are Swift 6 errors in waiting">
+Build with `SWIFT_STRICT_CONCURRENCY=complete` today. Every warning you silence now is a compile error you'd otherwise eat during the Swift 6 migration. This is the single cheapest future-proofing investment you can make.
+</Callout>
+
+## Structured vs unstructured concurrency
+
+**Structured**: child tasks' lifetimes are bounded by their parent. Cancellation
+and errors propagate automatically.
+
+```swift
+func loadDashboard() async throws -> Dashboard {
+    async let profile  = api.profile()
+    async let balances = api.balances()
+    async let feed     = api.feed()
+    return try await Dashboard(profile: profile, balances: balances, feed: feed)
+}
+```
+
+```swift
+func fanOut(ids: [String]) async throws -> [Item] {
+    try await withThrowingTaskGroup(of: Item.self) { group in
+        for id in ids { group.addTask { try await api.item(id: id) } }
+        var items: [Item] = []
+        for try await item in group { items.append(item) }
+        return items
+    }
+}
+```
+
+If any child task throws, the group cancels the rest. If the parent is
+cancelled, the group cancels all children.
+
+**Unstructured**: `Task { ... }` and `Task.detached { ... }`. The parent does
+not await them; they outlive the enclosing function. Use only when you truly
+need fire-and-forget (e.g., background indexing kicked off from a view).
+
+## AsyncSequence — authoring your own
+
+Conform to `AsyncSequence` by providing an `AsyncIterator`:
+
+```swift
+struct HeartbeatSequence: AsyncSequence {
+    typealias Element = Date
+    let interval: Duration
+
+    struct AsyncIterator: AsyncIteratorProtocol {
+        let interval: Duration
+        mutating func next() async throws -> Date? {
+            try await Task.sleep(for: interval)
+            try Task.checkCancellation()
+            return Date()
+        }
+    }
+
+    func makeAsyncIterator() -> AsyncIterator { .init(interval: interval) }
+}
+
+for try await tick in HeartbeatSequence(interval: .seconds(1)) {
+    print(tick)
+}
+```
+
+Every iteration is a potential cancellation point — call `Task.checkCancellation()`
+so callers can stop the sequence by cancelling the surrounding task.
+
+## Bridging legacy APIs with continuations
+
+```swift
+func currentLocation() async throws -> CLLocation {
+    try await withCheckedThrowingContinuation { continuation in
+        locationManager.requestLocation { result in
+            switch result {
+            case .success(let loc):  continuation.resume(returning: loc)
+            case .failure(let err):  continuation.resume(throwing: err)
+            }
+        }
+    }
+}
+```
+
+**Rules:** exactly one `resume` per continuation. Zero = your caller hangs
+forever. Two = your app crashes. Use `withCheckedContinuation` while
+developing — it catches both mistakes. Switch to `withUnsafeContinuation` only
+after profiling shows the runtime check matters.
+
+## AsyncStream for delegate / callback APIs
+
+```swift
+func networkPath() -> AsyncStream<NWPath> {
+    AsyncStream { continuation in
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { continuation.yield($0) }
+        monitor.start(queue: .global())
+        continuation.onTermination = { _ in monitor.cancel() }
+    }
+}
+```
+
+`AsyncStream` is the idiomatic adapter between "callbacks arrive over time" and
+"for-await consumes them." Always set `onTermination` so the underlying source
+stops when the consumer cancels.
+
+## Task-local values
+
+```swift
+enum Trace {
+    @TaskLocal static var requestID: String = "unknown"
+}
+
+await Trace.$requestID.withValue(UUID().uuidString) {
+    await handleRequest()
+}
+```
+
+Inside `handleRequest` and any child task, `Trace.requestID` returns the scoped
+value. This is how structured logging, distributed tracing, and test hooks plug
+into concurrent code without global mutable state.
+
+## Cancellation — cooperative, not preemptive
+
+Swift cancellation is a flag on the task; the runtime does not kill you. Your
+code must check:
+
+```swift
+while !Task.isCancelled {
+    try Task.checkCancellation()        // throws if cancelled
+    let chunk = try await loadNext()
+    process(chunk)
+}
+```
+
+`URLSession.shared.data(from:)`, `Task.sleep`, `AsyncSequence` — all check
+cancellation at suspension points. Your own CPU-bound loops must check
+manually.
+
+## Exercises
+
+1. **Convert a delegate API to AsyncStream.** Pick a `CLLocationManagerDelegate` or `AVCapturePhotoCaptureDelegate` and expose it as an `AsyncStream`. Verify `onTermination` tears down the underlying manager when the consumer cancels.
+2. **Find the data race.** Build your app with `SWIFT_STRICT_CONCURRENCY=complete` and fix every warning. Write up the three most interesting ones — what was the actual race, and what did you change (actor isolation, `Sendable`, `@MainActor`, or `nonisolated`)?
+
+## Next
+
+Continue to **[Topic 2 · Core ML, ARKit & HealthKit](/docs/advanced-trending/topic-2-coreml-arkit-healthkit)** — on-device ML, spatial tracking, and health data.

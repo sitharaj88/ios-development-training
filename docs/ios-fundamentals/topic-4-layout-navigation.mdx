@@ -1,0 +1,288 @@
+---
+id: topic-4-layout-navigation
+title: "Topic 4 · Layout & Navigation"
+sidebar_label: "4 · Layout & Navigation"
+description: Auto Layout, UIStackView, Safe Area, size classes, UINavigationController, UITabBarController, and modern UICollectionView with compositional layout.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 02 · Topic 4 · ~3 hours</span>
+  <h2>Laying views out and moving between them</h2>
+  <div>
+    Auto Layout is a constraint solver, not a geometry API. Compositional
+    Layout is the modern collection view DSL. Once you think in priorities,
+    sections, and safe areas, layouts stop fighting you — on iPhone, iPad,
+    and Mac.
+  </div>
+</div>
+
+## Why layout is worth mastering
+
+On iPhone alone you ship against ~15 active screen sizes. Add iPad Split View,
+Stage Manager, Catalyst windows, Dynamic Type, RTL languages, and the Vision
+Pro ornament system — and hard-coded frames turn into a support nightmare.
+Constraint-based layout and compositional collection views let one codebase
+adapt to every one of those surfaces.
+
+<Callout kind="info" title="Storyboards vs code-only vs SwiftUI">
+- <strong>Storyboards</strong> still win for quick prototypes and small apps.
+  They merge-conflict badly, don't diff well, and don't scale past ~20 scenes.
+- <strong>Code-only UIKit</strong> (with SnapKit or plain <code>NSLayoutConstraint</code>)
+  is the enterprise default: reviewable in diffs, fast to search, easy to unit test.
+- <strong>SwiftUI</strong> is the default for new screens. Drop to UIKit only for
+  the features it still doesn't do well (complex compositional layouts,
+  advanced text, custom transitions).
+Use the right tool per screen, not per app.
+</Callout>
+
+## What we'll cover
+
+<StepList
+  steps={[
+    { title: 'Auto Layout fundamentals', description: 'NSLayoutConstraint in code, anchors API, priorities, content hugging & compression resistance.' },
+    { title: 'UIStackView', description: 'The "just do it" layout primitive — axis, distribution, spacing, nested stacks.' },
+    { title: 'Safe Area & readable content', description: 'safeAreaLayoutGuide, readableContentGuide, keyboard avoidance.' },
+    { title: 'Size classes & traits', description: 'Compact vs regular, trait collections, adaptive layouts.' },
+    { title: 'UINavigationController', description: 'Push/pop, large titles, toolbars, back-button customization.' },
+    { title: 'UITabBarController', description: 'Tabs, badges, more-tab, restoration.' },
+    { title: 'UICollectionView + Compositional Layout', description: 'Sections, groups, items, and diffable data sources.' },
+  ]}
+/>
+
+## Auto Layout — the anchors API
+
+Auto Layout solves a system of linear equations. You describe relationships
+between view attributes; the solver picks frames at runtime. The modern API
+uses **layout anchors** and is what you should write today.
+
+```swift
+view.addSubview(button)
+button.translatesAutoresizingMaskIntoConstraints = false
+
+NSLayoutConstraint.activate([
+    button.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+    button.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
+    button.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+    button.heightAnchor.constraint(equalToConstant: 48),
+])
+```
+
+Three rules that save hours:
+
+1. **Always set `translatesAutoresizingMaskIntoConstraints = false`** on views
+   you add programmatically. Forgetting this is the top cause of "conflicting
+   constraints" logs.
+2. **Use `leadingAnchor`/`trailingAnchor`**, not `leftAnchor`/`rightAnchor` —
+   the leading/trailing pair respects right-to-left languages automatically.
+3. **Prefer `safeAreaLayoutGuide`** over `view` for edges that meet system
+   chrome (status bar, home indicator, nav bar).
+
+## Priorities & content sizing
+
+Every constraint has a **priority** from 1 to 1000. `.required` (1000) must
+hold; anything lower is negotiable and the solver breaks the lowest-priority
+constraint first if the system is over-determined.
+
+Two view properties also participate:
+
+- **Content hugging priority** — "how hard does this view resist growing
+  larger than its intrinsic size?" High hugging = the view stays small.
+- **Content compression resistance** — "how hard does this view resist being
+  squashed below its intrinsic size?" High resistance = the view keeps its
+  text.
+
+```swift
+titleLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+subtitleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+// title keeps its text; subtitle absorbs extra space or truncates first.
+```
+
+## UIStackView — the 80% tool
+
+Most screens are rows and columns. `UIStackView` internally generates the
+right constraints — you configure intent:
+
+```swift
+let stack = UIStackView(arrangedSubviews: [avatar, nameLabel, subtitleLabel])
+stack.axis = .horizontal
+stack.alignment = .center
+stack.distribution = .fill        // fill / fillEqually / fillProportionally / equalSpacing
+stack.spacing = 12
+stack.isLayoutMarginsRelativeArrangement = true
+stack.directionalLayoutMargins = .init(top: 8, leading: 16, bottom: 8, trailing: 16)
+```
+
+Nest stacks freely. A vertical stack of horizontal stacks is almost always
+clearer than 30 anchor constraints.
+
+## Safe area & readable content
+
+- `view.safeAreaLayoutGuide` — the region not covered by status bar,
+  navigation bar, tab bar, or home indicator.
+- `view.readableContentGuide` — a narrower guide on iPad that caps line
+  length for readability. Use it for long-form text.
+- Keyboard avoidance — observe `UIResponder.keyboardWillShowNotification`
+  and adjust `additionalSafeAreaInsets`, or use a `UIScrollView`'s
+  `keyboardDismissMode = .interactive`.
+
+## Size classes & traits
+
+Size classes describe *approximate* screen dimensions. Every view has a
+`traitCollection` with `horizontalSizeClass` and `verticalSizeClass`
+(`.compact` or `.regular`).
+
+| Device                           | Horizontal | Vertical |
+|----------------------------------|------------|----------|
+| iPhone portrait                  | compact    | regular  |
+| iPhone landscape (most)          | compact    | compact  |
+| iPhone Pro Max landscape         | regular    | compact  |
+| iPad portrait / landscape        | regular    | regular  |
+| iPad Split View 1/3              | compact    | regular  |
+
+Override `traitCollectionDidChange(_:)` or use `registerForTraitChanges` to
+react. Never branch on `UIDevice.userInterfaceIdiom` for layout — it's wrong
+for multitasking iPads.
+
+## Navigation: push/pop
+
+`UINavigationController` manages a stack of view controllers. The push/pop
+animations, the back button, and the nav bar chrome are free.
+
+```swift
+let nav = UINavigationController(rootViewController: ProductListVC(...))
+nav.navigationBar.prefersLargeTitles = true
+
+window.rootViewController = nav
+window.makeKeyAndVisible()
+
+// Later, from inside a VC:
+navigationController?.pushViewController(ProductDetailVC(id: id), animated: true)
+```
+
+Customize per-VC with `navigationItem` (title, back button, right bar
+buttons, search controller, large title display mode).
+
+## Tab bar
+
+`UITabBarController` owns a set of VCs, each typically wrapped in its own
+`UINavigationController` so each tab keeps its own stack.
+
+```swift
+let home = UINavigationController(rootViewController: HomeVC())
+home.tabBarItem = UITabBarItem(title: "Home",
+                               image: UIImage(systemName: "house"),
+                               selectedImage: UIImage(systemName: "house.fill"))
+
+let tabs = UITabBarController()
+tabs.viewControllers = [home, cart, profile]
+```
+
+Badges (`tabBarItem.badgeValue = "3"`) and the iPad sidebar style
+(`tabs.tabBarItemsMode = .tabSidebar` on iOS 18+) are part of the same API.
+
+## UICollectionView + Compositional Layout
+
+The modern collection view API is built on three ideas:
+
+1. **Sections** made of **groups** made of **items** — a small DSL.
+2. **`UICollectionLayoutListConfiguration`** for system list styles.
+3. **`NSDiffableDataSourceSnapshot`** — apply snapshots, the framework
+   animates the diff.
+
+Here is a two-section layout: a horizontally scrolling hero carousel on top,
+a two-column grid underneath.
+
+```swift
+func makeLayout() -> UICollectionViewLayout {
+    UICollectionViewCompositionalLayout { sectionIndex, _ in
+        switch sectionIndex {
+        case 0:
+            // Hero carousel — one full-width item, horizontal paging.
+            let item = NSCollectionLayoutItem(
+                layoutSize: .init(widthDimension: .fractionalWidth(1.0),
+                                  heightDimension: .fractionalHeight(1.0)))
+
+            let group = NSCollectionLayoutGroup.horizontal(
+                layoutSize: .init(widthDimension: .fractionalWidth(1.0),
+                                  heightDimension: .absolute(220)),
+                subitems: [item])
+
+            let section = NSCollectionLayoutSection(group: group)
+            section.orthogonalScrollingBehavior = .groupPagingCentered
+            section.contentInsets = .init(top: 0, leading: 0, bottom: 16, trailing: 0)
+            return section
+
+        default:
+            // Product grid — two columns, square items.
+            let item = NSCollectionLayoutItem(
+                layoutSize: .init(widthDimension: .fractionalWidth(0.5),
+                                  heightDimension: .fractionalHeight(1.0)))
+            item.contentInsets = .init(top: 4, leading: 4, bottom: 4, trailing: 4)
+
+            let group = NSCollectionLayoutGroup.horizontal(
+                layoutSize: .init(widthDimension: .fractionalWidth(1.0),
+                                  heightDimension: .fractionalWidth(0.5)),
+                subitems: [item])
+
+            let section = NSCollectionLayoutSection(group: group)
+            section.contentInsets = .init(top: 0, leading: 12, bottom: 24, trailing: 12)
+            return section
+        }
+    }
+}
+```
+
+Wire it up with a diffable data source and cell registrations:
+
+```swift
+enum Section: Hashable { case hero, grid }
+
+let heroCell = UICollectionView.CellRegistration<HeroCell, Product> { cell, _, product in
+    cell.configure(with: product)
+}
+let gridCell = UICollectionView.CellRegistration<GridCell, Product> { cell, _, product in
+    cell.configure(with: product)
+}
+
+let dataSource = UICollectionViewDiffableDataSource<Section, Product>(collectionView: collectionView) {
+    cv, indexPath, product in
+    switch Section(rawValue: indexPath.section) {
+    case .hero: return cv.dequeueConfiguredReusableCell(using: heroCell, for: indexPath, item: product)
+    default:    return cv.dequeueConfiguredReusableCell(using: gridCell, for: indexPath, item: product)
+    }
+}
+
+var snapshot = NSDiffableDataSourceSnapshot<Section, Product>()
+snapshot.appendSections([.hero, .grid])
+snapshot.appendItems(heroProducts, toSection: .hero)
+snapshot.appendItems(gridProducts, toSection: .grid)
+dataSource.apply(snapshot, animatingDifferences: true)
+```
+
+No more `cellForItemAt`, no more manually computing reloads — hand in a
+snapshot, get animated diffs for free.
+
+<LibraryGrid libraries={[
+  { name: 'SnapKit', tagline: 'Auto Layout DSL', description: 'Chainable, readable constraint DSL for UIKit. The default when teams choose to stay in UIKit.', url: 'https://github.com/SnapKit/SnapKit', recommended: true },
+  { name: 'Then', tagline: 'Fluent configuration', description: 'Tiny Swift package that adds .then { } so you can configure a view inline on declaration.', url: 'https://github.com/devxoul/Then' },
+  { name: 'Collection View Layouts Gallery', tagline: 'Apple · sample code', description: 'Apple\'s compositional layout sample gallery — 20+ layouts to copy from.', url: 'https://developer.apple.com/documentation/uikit/views_and_controls/collection_views/implementing_modern_collection_views', recommended: true },
+]} />
+
+## Exercises
+
+1. Build a settings screen using only `UIStackView`: a vertical stack
+   containing horizontal rows of `UILabel` + `UISwitch`. No explicit
+   `NSLayoutConstraint` calls allowed. Confirm it adapts to Dynamic Type
+   (Settings → Accessibility → Display & Text Size → Larger Text).
+2. Implement the two-section compositional layout above with a diffable
+   data source backed by mock data. Add a third section that uses
+   `UICollectionLayoutListConfiguration(appearance: .insetGrouped)` to
+   render a system-style list beneath the grid.
+
+## Next module
+
+Continue to **[Module 03 · Modern UI with SwiftUI](/docs/swiftui/overview)** —
+declarative views, state, and the modern Apple UI stack built on top of
+everything you just learned.

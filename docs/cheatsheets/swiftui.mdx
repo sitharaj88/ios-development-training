@@ -1,0 +1,346 @@
+---
+id: swiftui
+title: SwiftUI Cheatsheet
+sidebar_label: SwiftUI
+description: Scanable reference for SwiftUI — layout, state, navigation, modifiers, animations, and UIKit interop.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+One-page reference for SwiftUI idioms. Targets iOS 17+ (Observation, new
+navigation, `#Preview`). Where legacy syntax matters, it's called out
+explicitly.
+
+## Minimum view
+
+```swift
+import SwiftUI
+
+struct Hello: View {
+    var body: some View {
+        Text("Hello, world")
+            .font(.title)
+            .padding()
+    }
+}
+
+#Preview {
+    Hello()
+}
+```
+
+## State property wrappers (iOS 17+)
+
+| Wrapper | Use when… |
+| --- | --- |
+| `@State` | Value-type view-local state |
+| `@Binding` | Two-way ref to state owned by parent |
+| `@Bindable` | Derive `$` bindings from an `@Observable` class |
+| `@Environment` | Read a system or injected value |
+| `@Observable` | Decorate a reference-type model for SwiftUI tracking |
+| `@AppStorage` | `UserDefaults`-backed state |
+| `@SceneStorage` | Per-scene state, restored on relaunch |
+| `@FocusState` | Track focus target for text fields |
+
+Legacy (pre-iOS 17) equivalents: `@StateObject`, `@ObservedObject`,
+`@EnvironmentObject`, `ObservableObject`.
+
+## Observation (iOS 17+)
+
+```swift
+@Observable
+final class CartViewModel {
+    var items: [Item] = []
+    var isLoading = false
+    func add(_ item: Item) { items.append(item) }
+}
+
+struct CartView: View {
+    @Bindable var vm: CartViewModel
+
+    var body: some View {
+        List(vm.items) { Text($0.name) }
+    }
+}
+```
+
+## Layout primitives
+
+```swift
+VStack(alignment: .leading, spacing: 12) { ... }
+HStack(spacing: 8) { ... }
+ZStack(alignment: .topTrailing) { ... }
+LazyVStack { ... }
+LazyHGrid(rows: rows) { ... }
+Grid { GridRow { ... } }
+Spacer()
+Divider()
+```
+
+## Containers
+
+```swift
+List(items) { item in Text(item.name) }
+    .listStyle(.plain)
+    .refreshable { await vm.reload() }
+    .searchable(text: $query)
+
+ScrollView { VStack { ... } }
+    .scrollIndicators(.hidden)
+    .scrollBounceBehavior(.basedOnSize)
+
+Form {
+    Section("Profile") { ... }
+}
+```
+
+## Navigation (iOS 16+)
+
+```swift
+NavigationStack(path: $router.path) {
+    HomeView()
+        .navigationDestination(for: Route.self) { route in
+            switch route {
+            case .profile(let id): ProfileView(id: id)
+            case .settings:         SettingsView()
+            }
+        }
+}
+
+// Programmatic push
+router.path.append(Route.profile(id: user.id))
+```
+
+## Presenting
+
+```swift
+.sheet(isPresented: $showSheet) { DetailView() }
+.fullScreenCover(item: $selected) { DetailView(item: $0) }
+.alert("Delete?", isPresented: $showAlert) {
+    Button("Cancel", role: .cancel) {}
+    Button("Delete", role: .destructive) { vm.delete() }
+}
+.confirmationDialog(...)
+.popover(...)
+```
+
+## Modifiers — ordering matters
+
+```swift
+Text("Hi")
+    .padding()            // 1. pad the text
+    .background(.blue)    // 2. fill behind the padded rectangle
+    .clipShape(.capsule)  // 3. mask to capsule
+
+Text("Hi")
+    .background(.blue)    // 1. fill behind text-sized rectangle
+    .padding()            // 2. pad the filled capsule-less shape
+```
+
+## Frames, padding, layout
+
+```swift
+.frame(width: 120, height: 40)
+.frame(maxWidth: .infinity, alignment: .leading)
+.padding(.horizontal)
+.padding(.top, 8)
+.layoutPriority(1)
+.fixedSize(horizontal: false, vertical: true)  // force wrap
+```
+
+## Styling & color
+
+```swift
+.foregroundStyle(.secondary)
+.tint(.indigo)
+.background(.ultraThinMaterial)
+.gradient                                // on a color
+.shadow(radius: 2, x: 0, y: 1)
+
+// Color
+Color("AccentColor")    // asset catalog
+Color(.systemBackground) // UIColor bridge
+```
+
+## Typography
+
+```swift
+Text("Welcome")
+    .font(.largeTitle.weight(.bold))
+    .kerning(-0.5)
+    .foregroundStyle(.primary)
+
+// Dynamic Type friendly
+.font(.body)     // scales with user accessibility settings
+```
+
+## Buttons & controls
+
+```swift
+Button("Save") { vm.save() }
+    .buttonStyle(.borderedProminent)
+    .controlSize(.large)
+    .disabled(vm.isSaving)
+
+Toggle("Dark mode", isOn: $dark)
+Stepper("Qty \(qty)", value: $qty, in: 1...99)
+Slider(value: $volume, in: 0...1)
+Picker("Country", selection: $country) {
+    ForEach(countries, id: \.self) { Text($0) }
+}
+.pickerStyle(.menu)
+```
+
+## Text input
+
+```swift
+TextField("Email", text: $email)
+    .textContentType(.emailAddress)
+    .keyboardType(.emailAddress)
+    .textInputAutocapitalization(.never)
+    .autocorrectionDisabled()
+    .submitLabel(.done)
+    .onSubmit { vm.login() }
+```
+
+## Images
+
+```swift
+Image("logo")
+    .resizable()
+    .scaledToFit()
+    .frame(width: 120, height: 120)
+
+// SF Symbol
+Image(systemName: "heart.fill")
+    .symbolRenderingMode(.multicolor)
+    .foregroundStyle(.red, .pink)
+
+// AsyncImage
+AsyncImage(url: url) { phase in
+    switch phase {
+    case .empty:      ProgressView()
+    case .success(let img): img.resizable().scaledToFill()
+    case .failure:    Image(systemName: "xmark.octagon")
+    @unknown default: EmptyView()
+    }
+}
+```
+
+## Animations
+
+```swift
+withAnimation(.spring(duration: 0.3)) {
+    showDetail.toggle()
+}
+
+// Implicit — driven by state change
+.scaleEffect(expanded ? 1.1 : 1)
+.animation(.easeInOut, value: expanded)
+
+// Matched geometry
+@Namespace var ns
+Circle()
+    .matchedGeometryEffect(id: "bubble", in: ns)
+```
+
+## Gestures
+
+```swift
+.onTapGesture(count: 2) { }
+.onLongPressGesture(minimumDuration: 0.5) { }
+.gesture(
+    DragGesture()
+        .onChanged { offset = $0.translation }
+        .onEnded { _ in offset = .zero }
+)
+```
+
+## Lifecycle hooks
+
+```swift
+.task { await vm.load() }                   // iOS 15+, auto-cancels
+.task(id: user.id) { await vm.reload() }    // re-run on value change
+.onAppear { analytics.viewed() }
+.onChange(of: query) { old, new in vm.search(new) }
+.refreshable { await vm.reload() }
+```
+
+## Environment values
+
+```swift
+@Environment(\.colorScheme) var colorScheme
+@Environment(\.dismiss)     var dismiss
+@Environment(\.openURL)     var openURL
+@Environment(\.horizontalSizeClass) var hSize
+
+Button("Close") { dismiss() }
+```
+
+Inject your own:
+
+```swift
+struct APIClientKey: EnvironmentKey {
+    static let defaultValue: APIClient = .live
+}
+extension EnvironmentValues {
+    var apiClient: APIClient {
+        get { self[APIClientKey.self] }
+        set { self[APIClientKey.self] = newValue }
+    }
+}
+
+ContentView().environment(\.apiClient, .live)
+```
+
+## Previews (iOS 17+)
+
+```swift
+#Preview("Light") { CartView(vm: .fixture) }
+#Preview("Dark",  traits: .colorScheme(.dark)) { CartView(vm: .fixture) }
+#Preview("RTL",   traits: .layoutDirection(.rightToLeft)) { CartView(vm: .fixture) }
+```
+
+## UIKit interop
+
+```swift
+// SwiftUI -> UIKit
+let host = UIHostingController(rootView: MySwiftUIView())
+
+// UIKit -> SwiftUI
+struct MapViewRep: UIViewRepresentable {
+    func makeUIView(context: Context) -> MKMapView { MKMapView() }
+    func updateUIView(_ view: MKMapView, context: Context) { ... }
+}
+```
+
+## Accessibility
+
+```swift
+Image(systemName: "heart.fill")
+    .accessibilityLabel("Favourite")
+
+Button { ... } label: { ... }
+    .accessibilityHint("Adds this item to your favourites")
+    .accessibilityAddTraits(.isButton)
+
+Text("Hidden decorator")
+    .accessibilityHidden(true)
+```
+
+## Common pitfalls
+
+- **Putting business logic in `body`** — `body` is re-evaluated often; keep
+  it pure. Move work into the view model.
+- **`@State` on reference types** — use `@Observable` + `@Bindable` or
+  `@StateObject`.
+- **Excessive modifier re-application** — prefer conditional *values* over
+  conditional *modifiers* to avoid SwiftUI's "view identity" gotchas.
+- **Heavy `onAppear` work** — use `.task { ... }` so it auto-cancels on
+  disappearance.
+
+## See also
+
+- [Swift cheatsheet](/docs/cheatsheets/swift)
+- [Concurrency cheatsheet](/docs/cheatsheets/concurrency)
+- [Module 03 — SwiftUI](/docs/swiftui/overview)

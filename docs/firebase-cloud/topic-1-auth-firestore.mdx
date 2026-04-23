@@ -1,0 +1,272 @@
+---
+id: topic-1-auth-firestore
+title: Topic 1 · Auth & Firestore
+sidebar_label: 1 · Auth & Firestore
+description: Firebase project setup, Sign in with Apple, Google and email auth, Firestore listeners, transactions, data modeling, and offline persistence on iOS 17+.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 1 · Auth & Firestore · ~6 hours</span>
+  <h2>The identity and data layer</h2>
+  <div>
+    Before anything else your app needs two things: a trustworthy way to know
+    <em>who</em> the user is, and a place to persist their data that survives
+    app restarts and reaches other devices in near real time. Firebase Auth +
+    Firestore cover both in a few hundred lines of Swift — if you wire them up
+    correctly.
+  </div>
+</div>
+
+## Project setup — do this once, correctly
+
+<StepList
+  steps={[
+    { title: 'Create the Firebase project', description: 'At https://console.firebase.google.com create a project, add an iOS app, and register your bundle ID exactly as it appears in Xcode.' },
+    { title: 'Download GoogleService-Info.plist', description: 'Drag it into the Xcode target. Tick "Copy items if needed" and include it in every target that uses Firebase (extensions too).' },
+    { title: 'Add the SDK via SPM', description: 'File → Add Packages → https://github.com/firebase/firebase-ios-sdk. Select FirebaseAuth, FirebaseFirestore, FirebaseFirestoreSwift, and the Analytics product (required by the SDK).' },
+    { title: 'Call FirebaseApp.configure() once', description: 'Do it in your App type init or AppDelegate didFinishLaunchingWithOptions — never twice, never lazily.' },
+    { title: 'Enable sign-in providers', description: 'Firebase Console → Authentication → Sign-in method. Turn on Apple, Google, Email/Password, Anonymous.' },
+  ]}
+/>
+
+```swift
+import SwiftUI
+import FirebaseCore
+
+@main
+struct InboxApp: App {
+    init() { FirebaseApp.configure() }
+    var body: some Scene { WindowGroup { RootView() } }
+}
+```
+
+<Callout kind="info" title="Use different Firebase projects per environment">
+  Ship `GoogleService-Info-Dev.plist` and `GoogleService-Info-Prod.plist`, then
+  copy the correct one into place in a build phase based on the active scheme.
+  Mixing dev traffic with prod analytics is a recipe for bad dashboards.
+</Callout>
+
+## Sign in with Apple — the required path
+
+App Store Review Guideline 4.8 makes Sign in with Apple mandatory if you offer
+any third-party social login. Wire the Apple credential into Firebase Auth via
+`OAuthProvider(providerID: "apple.com")`.
+
+```swift
+import AuthenticationServices
+import CryptoKit
+import FirebaseAuth
+
+final class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate {
+    private var currentNonce: String?
+
+    func start() {
+        let nonce = Self.randomNonceString()
+        currentNonce = nonce
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = Self.sha256(nonce)
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.performRequests()
+    }
+
+    func authorizationController(controller: ASAuthorizationController,
+                                 didCompleteWithAuthorization auth: ASAuthorization) {
+        guard
+            let appleIDCred = auth.credential as? ASAuthorizationAppleIDCredential,
+            let tokenData = appleIDCred.identityToken,
+            let idToken = String(data: tokenData, encoding: .utf8),
+            let nonce = currentNonce
+        else { return }
+
+        let credential = OAuthProvider.credential(
+            withProviderID: "apple.com",
+            idToken: idToken,
+            rawNonce: nonce
+        )
+        Task {
+            let result = try await Auth.auth().signIn(with: credential)
+            print("Firebase uid:", result.user.uid)
+        }
+    }
+}
+```
+
+Google sign-in follows the same pattern via [GoogleSignIn-iOS](https://github.com/google/GoogleSignIn-iOS),
+producing an `idToken` + `accessToken` you feed into `GoogleAuthProvider.credential`.
+Email/password is `Auth.auth().createUser(withEmail:password:)` and anonymous is
+`Auth.auth().signInAnonymously()` — use it for guest checkouts, then *link* the
+anonymous user to a real credential so their data survives.
+
+## Firestore — the document database
+
+<FeatureGrid
+  features={[
+    { title: 'Real-time listeners', description: 'addSnapshotListener pushes updates to every device subscribed to a query in ~100ms.' },
+    { title: 'Offline persistence', description: 'Reads and writes work offline; the SDK reconciles when the device reconnects.' },
+    { title: 'Transactions', description: 'Read-modify-write with automatic retry on conflicts — safe money math and counters.' },
+    { title: 'Batched writes', description: 'Up to 500 writes committed atomically, perfect for fan-out on message send.' },
+    { title: 'Compound queries', description: 'where + orderBy + limit, with composite indexes auto-suggested in the console.' },
+    { title: 'Security rules', description: 'Expression language running on Google infra — the only trustworthy auth boundary.' },
+  ]}
+/>
+
+```swift
+import FirebaseFirestore
+
+struct Order: Codable, Identifiable {
+    @DocumentID var id: String?
+    let userId: String
+    let total: Decimal
+    let createdAt: Date
+}
+
+@MainActor
+final class OrdersStore: ObservableObject {
+    @Published private(set) var orders: [Order] = []
+    private var listener: ListenerRegistration?
+
+    func start(for uid: String) {
+        listener = Firestore.firestore()
+            .collection("orders")
+            .whereField("userId", isEqualTo: uid)
+            .order(by: "createdAt", descending: true)
+            .limit(to: 50)
+            .addSnapshotListener { [weak self] snap, _ in
+                self?.orders = snap?.documents.compactMap { try? $0.data(as: Order.self) } ?? []
+            }
+    }
+
+    deinit { listener?.remove() }
+}
+```
+
+### Transactions and batched writes
+
+```swift
+try await Firestore.firestore().runTransaction { txn, errorPointer in
+    let ref = Firestore.firestore().collection("counters").document("orders")
+    let snap = try? txn.getDocument(ref)
+    let current = snap?.data()?["count"] as? Int ?? 0
+    txn.updateData(["count": current + 1], forDocument: ref)
+    return nil
+}
+
+let batch = Firestore.firestore().batch()
+batch.setData(message.asDictionary, forDocument: messagesRef.document())
+batch.updateData(["lastMessageAt": Date()], forDocument: roomRef)
+try await batch.commit()
+```
+
+## Security rules — the real perimeter
+
+<Callout kind="danger" title="Never trust client-side security">
+  Rules in Swift (hiding buttons, filtering arrays) are UX, not security. Every
+  Firestore read and write must be gated by a rule on the server. Assume a
+  determined attacker will call the SDK directly with a forged request body.
+</Callout>
+
+```
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    match /orders/{orderId} {
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.userId;
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.userId;
+      allow update, delete: if false; // orders are immutable client-side
+    }
+  }
+}
+```
+
+Test rules with the [Firebase Local Emulator Suite](https://firebase.google.com/docs/emulator-suite)
+before every deploy — the `firebase emulators:exec` command runs a rules test
+suite in CI.
+
+## Modeling — embed or reference?
+
+<ComparisonCard
+  left={{
+    label: 'Embed',
+    title: 'Denormalized documents',
+    variant: 'neutral',
+    points: [
+      'One read gets the whole screen',
+      'Fast, cheap, cache-friendly',
+      'Duplicated data — update fan-out required',
+      'Great for read-heavy social feeds',
+    ],
+  }}
+  right={{
+    label: 'Reference',
+    title: 'Normalized with IDs',
+    variant: 'new',
+    points: [
+      'Single source of truth per entity',
+      'N+1 reads unless you fan-out in parallel',
+      'Easier to update, harder to query',
+      'Great for admin tools and settings',
+    ],
+  }}
+/>
+
+Default to **embed for display, reference for identity**: embed the author's
+display name and avatar URL on each post, but store the canonical user profile
+at `/users/{uid}`.
+
+## Firestore vs Realtime Database
+
+<ComparisonCard
+  left={{
+    label: 'Firestore',
+    title: 'Document database',
+    variant: 'new',
+    points: [
+      'Collections of typed documents',
+      'Rich queries: where, orderBy, compound indexes',
+      'Scales horizontally without sharding',
+      'Default choice for new projects',
+    ],
+  }}
+  right={{
+    label: 'Realtime Database',
+    title: 'JSON tree',
+    variant: 'neutral',
+    points: [
+      'Single giant JSON document',
+      'Lowest-latency presence (<50ms)',
+      'Limited querying — one orderBy per query',
+      'Pick only for presence/telemetry workloads',
+    ],
+  }}
+/>
+
+## Offline persistence
+
+```swift
+let settings = FirestoreSettings()
+settings.cacheSettings = PersistentCacheSettings(
+    sizeBytes: NSNumber(value: 100 * 1024 * 1024) // 100 MB
+)
+Firestore.firestore().settings = settings
+```
+
+With persistence on, the SDK serves cached results instantly and queues writes
+until the device reconnects. Your SwiftUI views don't know the network is down.
+
+## Exercises
+
+1. Ship Sign in with Apple + anonymous auth with **account linking**: a guest
+   user adds items to a cart, then signs in with Apple and keeps the cart.
+2. Build a real-time collaborative todo list using `addSnapshotListener`,
+   Firestore transactions for reordering, and security rules that only allow
+   members of the list's `members` array to read or write.
+
+## Next
+
+Continue to **[Topic 2 · Push, Storage & Analytics](/docs/firebase-cloud/topic-2-push-analytics)**.

@@ -1,0 +1,263 @@
+---
+id: topic-2-lifecycle-xcode
+title: "Topic 2 · App Lifecycle & Xcode"
+sidebar_label: "2 · Lifecycle & Xcode"
+description: App entry points from AppDelegate to SwiftUI @main, scene phases, launch sequence, and the Xcode workspace, schemes, and debugger you'll live in.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, AppLifecycleDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 02 · Topic 2 · ~2 hours</span>
+  <h2>How your app starts, suspends, and resumes</h2>
+  <div>
+    Three different entry-point models coexist in 2026 iOS code.
+    Learn how they map to the same OS lifecycle, what Xcode does with them,
+    and the debugging muscle memory that separates fast engineers from slow ones.
+  </div>
+</div>
+
+## Why three lifecycle models still matter
+
+Apple has added, not removed. A real enterprise codebase in 2026 has:
+
+- `UIApplicationDelegate` handling push tokens, background URL sessions,
+  and third-party SDK init.
+- `UISceneDelegate` managing window state and state restoration.
+- A SwiftUI `@main App` hosting new features via `UIHostingController`.
+
+All three are alive in the same process. You need to know which hook fires
+when — and which one to reach for in new code.
+
+## What we'll cover
+
+<StepList
+  steps={[
+    { title: 'The launch sequence', description: 'dyld → main → UIApplicationMain → app init → first scene → first view.' },
+    { title: 'Three entry-point models', description: 'UIApplicationDelegate, UISceneDelegate, and SwiftUI App — when each one owns state.' },
+    { title: 'Scene phases & app states', description: '.active / .inactive / .background, foreground-inactive, and the transitions you must handle.' },
+    { title: 'Xcode workspace anatomy', description: 'Projects vs workspaces, targets, schemes, build configurations, and SPM integration.' },
+    { title: 'Debugging basics', description: 'Breakpoints, LLDB po / v / expr, view hierarchy debugger, Instruments.' },
+    { title: 'Code signing — a quick intro', description: 'Just enough to understand the "signing error" dialog. Module 11 goes deep.' },
+  ]}
+/>
+
+## The big picture
+
+<Diagram
+  title="Process → App → Scene → View"
+  caption="The OS launches the process, your App type vends one or more Scenes (windows on iPad/Mac), and each Scene hosts a view tree whose appearance callbacks fire as users navigate."
+>
+  <AppLifecycleDiagram />
+</Diagram>
+
+The diagram is the same whether you write UIKit or SwiftUI. The APIs rename
+the boxes, the OS behaviour is identical.
+
+## Three entry-point models
+
+<ComparisonCard
+  left={{
+    label: 'UIKit · pre-iOS 13',
+    title: 'AppDelegate only',
+    variant: 'old',
+    points: [
+      'Single window per app (keyWindow)',
+      'application(_:didFinishLaunchingWithOptions:)',
+      'Lifecycle: didBecomeActive / willResignActive / didEnterBackground',
+      'Storyboard entry via UIMainStoryboardFile',
+      'Still required for push, background URL session, openURL',
+    ],
+  }}
+  right={{
+    label: 'UIKit · iOS 13+',
+    title: 'AppDelegate + SceneDelegate',
+    variant: 'neutral',
+    points: [
+      'Multiple scenes (iPad multitasking, Mac windows)',
+      'AppDelegate owns process-level concerns',
+      'SceneDelegate owns per-window state (UIWindowScene)',
+      'Info.plist UIApplicationSceneManifest wires scenes',
+      'Required for multi-window iPad & Catalyst apps',
+    ],
+  }}
+/>
+
+```swift
+// SwiftUI · iOS 14+ — the modern default
+@main
+struct ShopApp: App {
+    // Keep a UIApplicationDelegate adapter when you need UIKit-only hooks.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:    Analytics.resume()
+            case .inactive:  break              // brief transitional state
+            case .background: Persistence.flush()
+            @unknown default: break
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ app: UIApplication,
+                     didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Third-party SDKs, crash reporter, push registration.
+        return true
+    }
+}
+```
+
+All three models can coexist. New features go in SwiftUI scenes, process-level
+plumbing stays in the `AppDelegate`.
+
+## Launch sequence, step by step
+
+1. `launchd` spawns your process and `dyld` loads the executable + frameworks.
+2. `main()` is synthesized by the compiler (from `@main` or `UIApplicationMain`).
+3. `UIApplication` is instantiated. It reads `Info.plist` for scene config.
+4. `application(_:willFinishLaunchingWithOptions:)` and then
+   `didFinishLaunchingWithOptions:` run on the main thread.
+5. The first scene is requested. In UIKit that's
+   `scene(_:willConnectTo:options:)`; in SwiftUI it's your `WindowGroup` body.
+6. The root view is created and `viewDidLoad` / `onAppear` / `task` fire.
+7. The window becomes key and visible; scene phase moves `.inactive → .active`.
+
+Everything before step 5 counts against your **launch time budget** — iOS
+watches cold-start duration and will kill slow launches.
+
+<Callout kind="warning" title="The launch-time pitfall">
+Never perform synchronous network calls, disk migrations, or heavy SDK
+initialization directly in <code>didFinishLaunchingWithOptions</code> or
+the <code>App.init</code>. iOS measures your launch time, pre-warming may
+invoke these paths without a UI, and App Review fails apps that take more
+than a few seconds to present a first frame. Start expensive work on a
+background <code>Task</code> after you return <code>true</code>.
+</Callout>
+
+## Scene phases & app states
+
+| Phase       | When it fires                                            | What to do                          |
+|-------------|----------------------------------------------------------|-------------------------------------|
+| `.active`   | Foreground, receiving events                             | Resume timers, analytics, playback  |
+| `.inactive` | Transitioning (incoming call, Control Center, task switcher) | Pause video, stop sensitive input   |
+| `.background` | Not on screen; suspension imminent                     | Persist state, finish uploads       |
+
+The legacy UIKit notifications (`willResignActive`, `didEnterBackground`)
+fire alongside scene phases — they're still useful when you subscribe from
+outside a SwiftUI view:
+
+```swift
+NotificationCenter.default
+    .addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                 object: nil, queue: .main) { _ in
+        Cache.flushToDisk()
+    }
+```
+
+## Xcode workspace anatomy
+
+- **Project (`.xcodeproj`)** — contains targets, build settings, file
+  references. One app usually needs one project.
+- **Workspace (`.xcworkspace`)** — contains one or more projects plus Swift
+  packages. Open the workspace, not the project, once you add SPM dependencies.
+- **Target** — a build product: your app, its unit tests, a widget extension,
+  a framework. Each target has its own Info.plist, entitlements, and settings.
+- **Scheme** — a build + run configuration: which target, which configuration
+  (Debug/Release), environment variables, launch arguments, diagnostics.
+  Schemes are the right place for feature flags like `-FIRAnalyticsDebugEnabled`.
+- **Build configurations** — by default `Debug` and `Release`. Add
+  `Staging` for your QA builds; don't abuse `#if DEBUG` for runtime toggles.
+- **SPM integration** — File → Add Package Dependencies. Packages resolve into
+  `Package.resolved`; commit it so CI builds reproducibly.
+
+```
+MyShop.xcworkspace
+├── MyShop.xcodeproj
+│   ├── MyShop                (app target)
+│   ├── MyShopTests           (unit tests)
+│   ├── MyShopUITests         (XCUITest)
+│   └── MyShopWidget          (widget extension)
+└── Packages/
+    └── Features/             (local Swift package — feature modules)
+```
+
+## Debugging muscle memory
+
+Learn these cold. Every one of them pays for itself weekly.
+
+- **Breakpoints with actions** — right-click a breakpoint → Edit → add a log
+  message or `po self.state` action and tick "Automatically continue." Print
+  state without recompiling.
+- **LLDB `po` / `p` / `v`** — `po` prints a Swift-formatted description,
+  `p` uses raw LLDB types, `v` (`frame variable`) is faster because it skips
+  expression evaluation.
+- **`expression -l swift -- ...`** — when `po` complains about context,
+  force the Swift REPL.
+- **View hierarchy debugger** — Debug → View Debugging → Capture View
+  Hierarchy. Use it to find zero-sized views, ambiguous constraints, and
+  stray `UIHostingController` wrappers in mixed UIKit/SwiftUI apps.
+- **Memory graph** — the tool immediately left of the view debugger. Catches
+  retain cycles in seconds; combine with Instruments' Leaks template for
+  confirmation.
+- **Instruments** — Time Profiler for CPU, Allocations for memory, Hangs for
+  main-thread stalls, `os_signpost` for custom regions. Run Release
+  configuration; Debug builds lie about performance.
+
+```swift
+// Sprinkle signposts to see your code on the Instruments timeline.
+import OSLog
+let log = OSLog(subsystem: "com.example.myshop", category: .pointsOfInterest)
+
+os_signpost(.begin, log: log, name: "Checkout")
+await placeOrder()
+os_signpost(.end,   log: log, name: "Checkout")
+```
+
+## Code signing — the 60-second version
+
+Every iOS binary that runs on a device is signed with a certificate Apple
+trusts, and embeds a **provisioning profile** that lists:
+
+- The **App ID** (your bundle identifier).
+- The **devices** allowed (for development / ad-hoc) or "the App Store"
+  (for distribution).
+- The **entitlements** granted to that binary.
+
+Xcode's "Automatically manage signing" handles this for most teams. When it
+breaks, it's almost always one of: an entitlement mismatch (see Topic 1),
+an expired certificate, or a stale provisioning profile. Module 11 covers
+manual signing, enterprise distribution, and CI signing with fastlane &
+App Store Connect API keys in depth.
+
+<LibraryGrid libraries={[
+  { name: 'UIApplicationDelegate', tagline: 'Apple · process-level hooks', description: 'The canonical reference for every app-level callback — push, URL open, state restoration.', url: 'https://developer.apple.com/documentation/uikit/uiapplicationdelegate', recommended: true },
+  { name: 'App and Scene Lifecycle', tagline: 'Apple · scenes explained', description: 'Authoritative guide to multi-scene apps and UISceneDelegate.', url: 'https://developer.apple.com/documentation/uikit/app_and_environment/managing_your_app_s_life_cycle' },
+  { name: 'Instruments User Guide', tagline: 'Apple · profiling', description: 'Every template, every track. Learn the Time Profiler and Hangs templates first.', url: 'https://help.apple.com/instruments/mac/current/' },
+  { name: 'LLDB Swift Cheat Sheet', tagline: 'Apple · debugger', description: 'Swift-specific LLDB tips — expression evaluation, type lookup, breakpoint actions.', url: 'https://developer.apple.com/documentation/xcode/diagnosing-issues-using-crash-reports-and-device-logs' },
+]} />
+
+## Exercises
+
+1. Create a new SwiftUI app. Add a `UIApplicationDelegateAdaptor` and log
+   every one of: `didFinishLaunchingWithOptions`, `sceneWillConnect`,
+   `scenePhase` changes, and `onAppear` on the root view. Confirm the order
+   matches the launch sequence above.
+2. Add a breakpoint on the `scenePhase` change handler that logs the new
+   phase and auto-continues. Background and foreground the app repeatedly
+   and observe `.active → .inactive → .background → .inactive → .active`
+   in the console without ever pausing execution.
+
+## Next
+
+Continue to **[Topic 3 · UIKit Essentials](/docs/ios-fundamentals/topic-3-uikit-essentials)** —
+the view controller lifecycle, the responder chain, and the patterns that
+even SwiftUI can't escape.

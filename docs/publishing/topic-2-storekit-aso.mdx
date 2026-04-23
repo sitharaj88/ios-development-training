@@ -1,0 +1,229 @@
+---
+id: topic-2-storekit-aso
+title: Topic 2 · StoreKit 2, IAPs & ASO
+sidebar_label: 2 · StoreKit & ASO
+description: Modern StoreKit 2 with async/await, server-side signed JWS receipts, Privacy Manifests, and the App Store Optimization levers that actually move downloads.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Module 11 · Topic 2 · 55 min</span>
+  <h2>Charge money, stay compliant, get found</h2>
+  <div>
+    StoreKit 2 replaces the receipt-validation nightmare of StoreKit 1 with
+    async/await and signed JWS transactions. Combined with Privacy Manifests
+    and a disciplined ASO workflow, you can ship a monetised app that actually
+    survives App Review and climbs search rankings.
+  </div>
+</div>
+
+## Why StoreKit 2 exists
+
+StoreKit 1 required base64-decoding ASN.1 receipts, round-tripping them to
+Apple's `/verifyReceipt` endpoint, and parsing the response. Every app ended up
+reinventing the same bugs. StoreKit 2 (iOS 15+) throws all that away: every
+`Transaction` is a **signed JWS** you can verify locally, and the API is
+async/await all the way down.
+
+## The four IAP product types
+
+<ComparisonCard
+  left={{
+    label: 'One-time',
+    title: 'Consumable / Non-consumable',
+    variant: 'neutral',
+    points: [
+      'Consumable: coins, gems, hints — bought and used. Not restored.',
+      'Non-consumable: pro unlock, extra levels — bought once, restored forever.',
+      'Family Sharing only applies to non-consumables.',
+      'Verify via Transaction.currentEntitlements for non-consumables.',
+    ],
+  }}
+  right={{
+    label: 'Recurring',
+    title: 'Subscriptions',
+    variant: 'neutral',
+    points: [
+      'Auto-renewing: managed by Apple, cancel in Settings, renews until canceled.',
+      'Non-renewing: you manage duration yourself (rare — usually use auto-renewing).',
+      'Intro offers (free trial, pay-up-front, pay-as-you-go) configured per territory.',
+      'Promotional offers target lapsed subscribers with a signed discount code.',
+    ],
+  }}
+/>
+
+## A complete purchase flow
+
+```swift
+import StoreKit
+
+@MainActor
+final class Store: ObservableObject {
+    @Published private(set) var products: [Product] = []
+    @Published private(set) var purchasedIDs: Set<String> = []
+
+    private var updatesTask: Task<Void, Never>?
+
+    func bootstrap() async {
+        updatesTask = Task.detached { [weak self] in
+            for await result in Transaction.updates {
+                await self?.handle(transaction: result)
+            }
+        }
+        await loadProducts()
+        await refreshEntitlements()
+    }
+
+    func loadProducts() async {
+        do {
+            products = try await Product.products(for: [
+                "pro_monthly", "pro_yearly", "coins_500",
+            ])
+        } catch {
+            print("Product load failed: \(error)")
+        }
+    }
+
+    func purchase(_ product: Product) async throws {
+        let result = try await product.purchase()
+        switch result {
+        case .success(let verification):
+            let transaction = try verify(verification)
+            await deliver(transaction)
+            await transaction.finish()         // always finish, even after server grant
+        case .userCancelled:
+            break
+        case .pending:
+            break                              // SCA / Ask to Buy — wait for Transaction.updates
+        @unknown default:
+            break
+        }
+    }
+
+    private func verify<T>(_ result: VerificationResult<T>) throws -> T {
+        switch result {
+        case .verified(let value):       return value
+        case .unverified(_, let error):  throw error
+        }
+    }
+
+    func refreshEntitlements() async {
+        var owned: Set<String> = []
+        for await result in Transaction.currentEntitlements {
+            if case .verified(let tx) = result { owned.insert(tx.productID) }
+        }
+        purchasedIDs = owned
+    }
+
+    private func handle(transaction result: VerificationResult<Transaction>) async {
+        if case .verified(let tx) = result {
+            await deliver(tx)
+            await tx.finish()
+        }
+    }
+
+    private func deliver(_ transaction: Transaction) async {
+        purchasedIDs.insert(transaction.productID)
+    }
+}
+```
+
+The `Transaction.updates` stream is the **only** reliable way to catch purchases
+that happen outside your app (Ask to Buy approvals, Family Sharing shares,
+subscription renewals). Start listening on launch, before restoring UI state.
+
+## Server-side verification with the App Store Server API
+
+Local JWS verification is fine for most apps, but revenue-critical features
+should double-check on your backend. The App Store Server API accepts a
+`transactionId` and returns a **signed JWS** you re-verify with Apple's public
+keys.
+
+```text
+POST https://api.storekit.itunes.apple.com/inApps/v1/transactions/{transactionId}
+Authorization: Bearer <JWT signed with your .p8 App Store Connect key>
+```
+
+The response's `signedTransactionInfo` is a JWS whose payload is the canonical
+transaction record. Validate the JWS chain against Apple's root, then trust the
+payload. Never trust a receipt forwarded from the client — signed JWS is the only
+source of truth.
+
+## StoreKit config files — testing without the sandbox
+
+The sandbox store is slow, flaky, and clears entitlements unpredictably. Add a
+**StoreKit Configuration File** to your target (File → New → StoreKit Configuration
+File), list your products there, and enable it in the scheme's Run options.
+Purchases happen instantly, subscriptions renew in seconds, and you can simulate
+refunds, billing failures, and Ask to Buy.
+
+```text
+Scheme → Run → Options → StoreKit Configuration → StoreKit.storekit
+```
+
+## Promotional offers
+
+Configured in App Store Connect, served via a **signed offer** from your server
+(you sign with a key Apple generates for offers specifically, not your API key).
+Use them to win back lapsed subscribers — "20% off for 3 months if you come back
+this week."
+
+## App Store review — the landmines
+
+<StepList
+  steps={[
+    { title: 'Restore Purchases button', description: 'Non-consumables must expose a Restore button. Calling AppStore.sync() then refreshing entitlements is enough.' },
+    { title: 'Subscription metadata matches reality', description: 'Renewal price, duration, free trial, and what unlocks must be visible on the paywall — not just in the privacy policy.' },
+    { title: 'Demo account for reviewers', description: 'If your app has a login wall, provide working test credentials in App Review notes. Expired credentials = rejection.' },
+    { title: 'Privacy policy + terms URL', description: 'Both must be reachable public URLs. App Store Connect now requires a Terms of Use (EULA) URL for subscriptions.' },
+    { title: 'Third-party login alongside Apple', description: 'If you offer Google/Facebook login, you must also offer Sign in with Apple. Missing this has been the #1 rejection reason for years.' },
+    { title: 'Don\'t mention other stores', description: 'No "Also on Android" text, no web-checkout links for digital goods (outside a few specific reader-app exceptions).' },
+  ]}
+/>
+
+## Privacy Nutrition Labels and Privacy Manifests
+
+Two separate things that are both mandatory as of 2024+:
+
+- **Privacy Nutrition Labels** — declared in App Store Connect, shown on the product page. What data you collect, whether it's linked to the user, whether it's used for tracking.
+- **Privacy Manifest (`PrivacyInfo.xcprivacy`)** — a plist shipped *inside the binary*. Declares:
+  - `NSPrivacyAccessedAPITypes` — justifies every use of "required reason" APIs (UserDefaults, file timestamps, disk space, system boot time, active keyboard).
+  - `NSPrivacyTrackingDomains` — domains your app contacts for tracking, blocked by iOS when ATT hasn't been authorized.
+  - `NSPrivacyCollectedDataTypes` — the machine-readable mirror of the nutrition label.
+
+Every third-party SDK on Apple's "commonly used SDKs" list must now ship its own
+`PrivacyInfo.xcprivacy` + a signature. If a dependency doesn't, App Review
+rejects your upload with a list of missing manifests.
+
+<Callout kind="warning" title="Privacy Manifest drift is the new signing drift">
+Every SDK update can add new required-reason APIs. Run `grep -r NSPrivacyAccessedAPITypes` after every dependency bump and update your aggregated app-level manifest. Treat it as part of the release checklist.
+</Callout>
+
+## App Store Optimization — what actually moves the needle
+
+- **App name (30 chars)** + **subtitle (30 chars)** are the highest-weighted ranking signals.
+- **Keywords field (100 chars)** — comma-separated, not visible to users. Don't repeat words from the name/subtitle; those are already indexed.
+- **Screenshots** — first three are visible without scrolling. Lead with the hero feature, not your onboarding screen.
+- **App Preview video** — autoplays silently on the product page. 15–30 seconds, no voice-over, captions baked in.
+- **Localization** — per-locale name + screenshots + keywords. A Japanese localization alone often doubles downloads in Japan.
+- **Product Page Optimization** — A/B test up to 3 variants of screenshots / icon / preview against the default. Requires 90% traffic minimum per variant to reach significance.
+- **Reviews and ratings** — prompt via `SKStoreReviewController.requestReview(in:)` after a success moment (completing a workout, saving a document), never on first launch.
+
+## Subscription infrastructure libraries
+
+<LibraryGrid libraries={[
+  { name: 'RevenueCat', tagline: 'Subscription backend', description: 'Entitlements, webhooks, charts, cross-platform (iOS/Android/web). Free tier up to $2.5k MTR.', url: 'https://www.revenuecat.com', recommended: true },
+  { name: 'Qonversion', tagline: 'Subscription analytics', description: 'Similar scope to RevenueCat with stronger emphasis on experimentation and LTV prediction.', url: 'https://qonversion.io' },
+  { name: 'Adapty', tagline: 'Paywall A/B testing', description: 'Server-driven paywall UI plus subscription infra — update paywalls without App Review.', url: 'https://adapty.io' },
+  { name: 'App Store Server API', tagline: 'Direct Apple API', description: 'First-party — signed JWS, refund events, subscription status. Zero runtime dependencies.', url: 'https://developer.apple.com/documentation/appstoreserverapi' },
+]} />
+
+## Exercises
+
+1. **Local StoreKit testing.** Add a StoreKit configuration file with one auto-renewing subscription and one non-consumable, wire up the `Store` class above, and confirm the `Transaction.updates` stream fires on subscription renewal (the config file renews monthly subs in ~3 seconds).
+2. **Privacy manifest audit.** Run a build and inspect the final `.app` bundle. List every `PrivacyInfo.xcprivacy` file (app + each embedded framework). For any that declare `NSPrivacyAccessedAPIType` without a reason code, trace it back to the source.
+
+## Next module
+
+Continue to **[Module 12 · Advanced & Trending Topics](/docs/advanced-trending/overview)** — concurrency depth, on-device ML, AR, and spatial computing.

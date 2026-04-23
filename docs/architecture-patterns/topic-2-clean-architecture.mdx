@@ -1,0 +1,260 @@
+---
+id: topic-2-clean-architecture
+title: Topic 2 · Clean Architecture for iOS
+sidebar_label: 2 · Clean Architecture
+description: The dependency rule, Use Cases, Repository protocols, entity vs DTO, and when slicing your iOS app into Swift Packages actually pays off.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, IOSArchDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 2 · 90–120 min · Module 04</span>
+  <h2>Layered, testable apps that survive two years of feature work</h2>
+  <div>
+    Clean Architecture is not a framework — it's a single rule about
+    dependency direction, applied consistently. Adopt it selectively and your
+    iOS app stays shippable even after your team triples.
+  </div>
+</div>
+
+## Why it matters before we define it
+
+Every app ships with a dependency graph. The question is whether you shape
+that graph deliberately or let it grow like ivy across your source tree. In
+a tangled graph, changing the JSON API forces edits in 40 SwiftUI files.
+In a layered graph, it forces edits in one — the repository implementation.
+
+Clean Architecture makes the graph explicit through a single invariant: **source
+dependencies always point inward**, from volatile outer layers (SwiftUI, HTTP,
+SwiftData) toward stable inner layers (business rules, entities).
+
+## The layered model
+
+<Diagram
+  title="Clean Architecture applied to an iOS app"
+  caption="Presentation and Data both depend on Domain. Domain depends on nothing but the Swift standard library."
+>
+  <IOSArchDiagram />
+</Diagram>
+
+- **Presentation** — SwiftUI views, view models, navigation state. Knows
+  Domain types. Never touches URLSession or SwiftData.
+- **Domain** — Entities, Use Cases, Repository *protocols*. Pure Swift, zero
+  framework imports. This is your stable core.
+- **Data** — Repository *implementations*, DTOs, API clients, SwiftData
+  stores, cache strategies. Depends on Domain. Never referenced by
+  Presentation directly.
+
+The test: open `Package.swift` for your Domain target. If it imports
+anything other than `Foundation`, the dependency rule has leaked.
+
+## Use Cases — single-purpose action objects
+
+A Use Case (sometimes "Interactor") represents exactly one business
+operation. One file, one verb, one public method. The pattern shows its
+value when the rule spans multiple repositories.
+
+```swift
+// Domain
+struct CheckoutUseCase {
+    let cartRepo: CartRepositoryProtocol
+    let orderRepo: OrderRepositoryProtocol
+    let payment: PaymentGatewayProtocol
+    let clock: () -> Date
+
+    func execute(using method: PaymentMethod) async throws -> Order {
+        let cart = try await cartRepo.current()
+        guard !cart.items.isEmpty else { throw CheckoutError.emptyCart }
+
+        let receipt = try await payment.charge(
+            amount: cart.total,
+            method: method
+        )
+
+        let order = Order(
+            id: .init(),
+            items: cart.items,
+            total: cart.total,
+            receiptID: receipt.id,
+            placedAt: clock()
+        )
+
+        try await orderRepo.save(order)
+        try await cartRepo.clear()
+        return order
+    }
+}
+```
+
+Notice what isn't here: no `URLSession`, no `ModelContext`, no view model,
+no alert. `CheckoutUseCase` is 100% testable with hand-written fakes and
+runs in under a millisecond per test.
+
+## Repository protocols in Domain, implementations in Data
+
+```swift
+// Domain/OrderRepository.swift
+public protocol OrderRepositoryProtocol {
+    func save(_ order: Order) async throws
+    func history(for user: User.ID) async throws -> [Order]
+}
+
+// Data/OrderRepository.swift
+import SwiftData
+
+public final class OrderRepository: OrderRepositoryProtocol {
+    private let context: ModelContext
+    private let api: OrdersAPIClient
+
+    public init(context: ModelContext, api: OrdersAPIClient) {
+        self.context = context
+        self.api = api
+    }
+
+    public func save(_ order: Order) async throws {
+        try await api.create(OrderDTO(order))
+        context.insert(OrderRecord(order))
+        try context.save()
+    }
+
+    public func history(for user: User.ID) async throws -> [Order] {
+        let dtos = try await api.history(userID: user.rawValue)
+        return dtos.map { $0.toDomain() }
+    }
+}
+```
+
+The protocol is the seam. Your app's composition root wires
+`CheckoutUseCase(orderRepo: OrderRepository(...))` in production and
+`CheckoutUseCase(orderRepo: InMemoryOrderRepository())` in tests.
+
+## Entity vs DTO — always map at the boundary
+
+```swift
+// Domain — stable, versioned by your team
+public struct Order: Identifiable, Hashable {
+    public let id: UUID
+    public let items: [LineItem]
+    public let total: Decimal
+    public let receiptID: String
+    public let placedAt: Date
+}
+
+// Data — shaped by a backend you do not control
+struct OrderDTO: Codable {
+    let order_id: String
+    let line_items: [LineItemDTO]
+    let total_cents: Int
+    let receipt: String
+    let placed_at_iso8601: String
+
+    func toDomain() -> Order {
+        Order(
+            id: UUID(uuidString: order_id) ?? UUID(),
+            items: line_items.map { $0.toDomain() },
+            total: Decimal(total_cents) / 100,
+            receiptID: receipt,
+            placedAt: ISO8601DateFormatter().date(from: placed_at_iso8601) ?? .now
+        )
+    }
+}
+```
+
+<Callout kind="warning" title="Codable on domain types is a smell">
+If <code>Order</code> itself is <code>Codable</code>, the wire format has
+invaded your Domain. The day the backend renames <code>total_cents</code>
+to <code>amount_minor</code>, every screen breaks. Map at the boundary —
+the DTO absorbs the change and your Domain stays still.
+</Callout>
+
+## The dependency rule, enforced
+
+Protocols + `init` injection are the enforcement mechanism. Every arrow
+that *looks* like it points outward (Domain calling the database) is
+inverted — Domain declares a protocol; Data implements it.
+
+<ComparisonCard
+  left={{
+    label: 'Lean MVVM only',
+    title: 'View → VM → Repository',
+    variant: 'neutral',
+    points: [
+      'No Use Case layer',
+      'VM calls the repository directly',
+      'Fine for CRUD apps under 10 screens',
+      'Less boilerplate, faster to ship',
+    ],
+  }}
+  right={{
+    label: 'Full Clean',
+    title: 'View → VM → UseCase → Repository',
+    variant: 'accent',
+    points: [
+      'Use Cases encapsulate multi-repo rules',
+      'Reusable across screens & platforms',
+      'Justified around 10+ features or 2+ teams',
+      'Required for deep rule test coverage',
+    ],
+  }}
+/>
+
+<Callout kind="info" title="Clean is a spectrum, not a religion">
+Small apps don't need Use Cases. Medium apps don't need Swift Packages per
+layer. Apply the dependency rule always; apply the ceremony only where it
+earns its keep. You can introduce Use Cases the first time a rule has to be
+called from two screens — not before.
+</Callout>
+
+## Module boundaries with Swift Packages
+
+<StepList
+  steps={[
+    { title: 'Start with groups, not packages', description: 'Domain/, Data/, Presentation/ folders in the app target. The rule applies — the compiler just can\'t enforce it yet.' },
+    { title: 'Extract Domain first', description: 'Move it to a local Swift Package once it stabilizes. SwiftUI imports now fail at compile time inside Domain.' },
+    { title: 'Extract Data when sources multiply', description: 'Two or more data sources (REST + cache, Firebase + SwiftData) justify a Data package that quarantines heavy imports.' },
+    { title: 'Split by feature around 15+ screens', description: 'Feature packages (Feed, Checkout, Profile) all depend on Domain; the app target composes them.' },
+  ]}
+/>
+
+The app target ends up as the composition root — a tiny file with no
+business logic, just wiring.
+
+## When Clean is overkill
+
+Single-developer apps under 10 screens, throwaway prototypes, and tightly
+UIKit-bound apps where `UIViewController` already owns state don't need
+separate packages or Use Cases. Adopting the dependency rule mentally —
+Domain types shouldn't import UIKit — is enough.
+
+## Dependency injection and wiring libraries
+
+At meaningful app size, wiring dozens of protocols by hand becomes tedious.
+The ecosystem offers several opinionated answers.
+
+<LibraryGrid libraries={[
+  { name: 'Factory', tagline: 'Lightweight Swift DI', description: 'Property-wrapper-based container by Michael Long. Compile-checked, minimal runtime, pairs beautifully with @Observable.', url: 'https://github.com/hmlongco/Factory', recommended: true },
+  { name: 'Swinject', tagline: 'Classic DI container', description: 'Mature, battle-tested dependency injection container. Great when you need assembly-based modular registration.', url: 'https://github.com/Swinject/Swinject' },
+  { name: 'Needle', tagline: 'Compile-time DI', description: 'Uber\'s hierarchical DI framework with a code generator. Zero runtime reflection; fails at build time if graph is broken.', url: 'https://github.com/uber/needle' },
+  { name: 'TCA', tagline: 'Composable Architecture', description: 'Point-Free\'s unidirectional architecture with dependency values, reducers, and exhaustive testing baked in.', url: 'https://github.com/pointfreeco/swift-composable-architecture' },
+]} />
+
+## Key takeaways
+
+- Dependencies point inward. Domain imports nothing but `Foundation`.
+- Use Cases earn their keep when a business rule touches 2+ repositories.
+- DTO ≠ Entity. Map at the repository boundary, always.
+- Swift Packages turn the dependency rule from a convention into a
+  compile-time guarantee.
+
+## Practice exercises
+
+1. Take a feature from an existing app and extract a Domain Swift Package
+   containing its entities, a repository protocol, and one Use Case.
+   Confirm the package compiles with only `import Foundation`.
+2. Write a `FakeOrderRepository` conforming to your `OrderRepositoryProtocol`
+   and unit-test `CheckoutUseCase` for the empty-cart and happy-path cases
+   without importing SwiftUI or SwiftData.
+
+## Next
+
+Continue to **[Topic 3 · Dependency Injection & Coordinators](/docs/architecture-patterns/topic-3-dependency-injection)** — wire the graph you just designed and own navigation as a first-class concern.

@@ -1,0 +1,342 @@
+---
+id: swift
+title: Swift Cheatsheet
+sidebar_label: Swift
+description: A one-page reference for the Swift syntax you'll use every day — value types, optionals, protocols, generics, closures, and error handling.
+---
+
+import { Callout } from '@site/src/components/Doc';
+
+A dense reference card for the Swift idioms used throughout this curriculum.
+Scan this when you're context-switching from another language, or when
+something "felt like" Swift syntax but didn't compile.
+
+<Callout kind="tip" title="For the full story">
+See [Module 01 — Swift Foundation](/docs/swift-foundation/overview) for the
+teaching material behind each idiom below.
+</Callout>
+
+## Variables & constants
+
+```swift
+let name = "Sitharaj"          // immutable, preferred default
+var count = 0                  // mutable
+let users: [User] = []         // explicit type
+let x: Int? = nil              // optional
+
+// String interpolation
+print("Hello, \(name) — you have \(count) items")
+```
+
+## Optionals
+
+```swift
+var nick: String? = "S"
+
+// Safe unwrap (current-scope binding)
+if let nick { print(nick.uppercased()) }
+
+// Early exit
+guard let nick else { return }
+
+// Chaining
+let count = user?.profile?.photos?.count ?? 0
+
+// Force unwrap — avoid unless you own the invariant
+let required = lookup["key"]!
+```
+
+## Control flow
+
+```swift
+for item in items where item.isActive { print(item) }
+
+// Pattern-matched switch
+switch response {
+case .success(let value):         print(value)
+case .failure(let .network(msg)): print("net: \(msg)")
+case .failure:                    print("other")
+}
+
+// Ranges
+for i in 0..<10 { ... }
+for i in stride(from: 0, to: 100, by: 5) { ... }
+
+// while / repeat-while
+while !queue.isEmpty { ... }
+```
+
+## Functions
+
+```swift
+// Named parameters with external & internal labels
+func greet(to name: String, from sender: String = "Sitharaj") -> String {
+    "Hi \(name), from \(sender)"
+}
+greet(to: "world")
+
+// Multiple return values via tuple
+func range(of numbers: [Int]) -> (min: Int, max: Int)? {
+    guard let min = numbers.min(), let max = numbers.max() else { return nil }
+    return (min, max)
+}
+
+// Variadic
+func sum(_ nums: Int...) -> Int { nums.reduce(0, +) }
+
+// inout
+func swap<T>(_ a: inout T, _ b: inout T) {
+    let tmp = a; a = b; b = tmp
+}
+```
+
+## Closures
+
+```swift
+let squared = [1, 2, 3].map { $0 * $0 }
+
+// Trailing closure
+button.onTap {
+    print("tapped")
+}
+
+// Capture semantics
+let capture = { [weak self] in
+    self?.reload()
+}
+
+// Escaping vs non-escaping
+func fetch(_ completion: @escaping (Result<Data, Error>) -> Void) { ... }
+```
+
+## Value vs reference types
+
+```swift
+struct Point { var x: Int; var y: Int }       // VALUE — copied
+class  Counter { var n = 0 }                  // REFERENCE — shared
+
+var a = Point(x: 0, y: 0)
+var b = a; b.x = 10
+print(a.x, b.x)   // 0 10  (independent)
+
+let c = Counter()
+let d = c; d.n = 5
+print(c.n, d.n)   // 5 5   (same instance)
+```
+
+**Rule:** reach for `struct` first. Use `class` only when you need identity,
+reference semantics, or Obj-C/Cocoa interop.
+
+## Protocols & protocol-oriented programming
+
+```swift
+protocol Identifiable {
+    associatedtype ID: Hashable
+    var id: ID { get }
+}
+
+extension Array where Element: Identifiable {
+    func find(_ id: Element.ID) -> Element? {
+        first { $0.id == id }
+    }
+}
+
+// Existentials vs generics
+func show(any Identifiable)     // runtime dispatch, one call site per type
+func show<T: Identifiable>(_ t: T) // compile-time, specialised
+```
+
+## Generics
+
+```swift
+struct Stack<Element> {
+    private var items: [Element] = []
+    mutating func push(_ x: Element) { items.append(x) }
+    mutating func pop() -> Element?  { items.popLast() }
+}
+
+// Constrained generics
+func firstMatch<T: Equatable>(_ array: [T], _ target: T) -> T? {
+    array.first(where: { $0 == target })
+}
+```
+
+## Error handling
+
+```swift
+enum NetworkError: Error {
+    case offline
+    case status(Int)
+}
+
+func load() throws -> Data {
+    guard reachable else { throw NetworkError.offline }
+    return Data()
+}
+
+// do / try / catch
+do {
+    let data = try load()
+} catch NetworkError.offline {
+    print("offline")
+} catch {
+    print("other: \(error)")
+}
+
+// Optional-try (returns nil on throw)
+let data = try? load()
+
+// Force-try (crashes on throw — use only for invariants you own)
+let data = try! load()
+```
+
+## Result
+
+```swift
+func fetch() -> Result<User, NetworkError> { ... }
+
+switch fetch() {
+case .success(let user):  print(user)
+case .failure(let error): print(error)
+}
+```
+
+## Async / await
+
+```swift
+func fetchUser(id: UUID) async throws -> User {
+    let (data, _) = try await URLSession.shared.data(from: userURL(id))
+    return try JSONDecoder().decode(User.self, from: data)
+}
+
+Task {
+    do {
+        let user = try await fetchUser(id: id)
+        print(user.name)
+    } catch {
+        print("failed: \(error)")
+    }
+}
+
+// Run independent work in parallel
+async let a = fetchUser(id: id1)
+async let b = fetchUser(id: id2)
+let (u1, u2) = try await (a, b)
+
+// Cancellation
+let task = Task { try await longRunning() }
+task.cancel()
+```
+
+## Actors
+
+```swift
+actor ImageCache {
+    private var store: [URL: Data] = [:]
+
+    func data(for url: URL) async throws -> Data {
+        if let cached = store[url] { return cached }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        store[url] = data
+        return data
+    }
+}
+```
+
+## Property wrappers
+
+```swift
+@propertyWrapper
+struct Clamped<Value: Comparable> {
+    private var value: Value
+    let range: ClosedRange<Value>
+    var wrappedValue: Value {
+        get { value }
+        set { value = min(max(newValue, range.lowerBound), range.upperBound) }
+    }
+    init(wrappedValue: Value, _ range: ClosedRange<Value>) {
+        self.range = range
+        self.value = min(max(wrappedValue, range.lowerBound), range.upperBound)
+    }
+}
+
+struct Volume {
+    @Clamped(0...100) var level: Int = 50
+}
+```
+
+## Extensions
+
+```swift
+extension Array where Element: Numeric {
+    var total: Element { reduce(0, +) }
+}
+
+extension String {
+    var isValidEmail: Bool {
+        contains("@") && contains(".")
+    }
+}
+```
+
+## Codable
+
+```swift
+struct User: Codable {
+    let id: UUID
+    let name: String
+    let joinedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case joinedAt = "joined_at"
+    }
+}
+
+// Encode / decode
+let decoder = JSONDecoder()
+decoder.dateDecodingStrategy = .iso8601
+let user = try decoder.decode(User.self, from: data)
+
+let encoder = JSONEncoder()
+encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+let output = try encoder.encode(user)
+```
+
+## Access control
+
+| Level | Visible where |
+| --- | --- |
+| `private` | enclosing declaration |
+| `fileprivate` | same file |
+| `internal` (default) | same module |
+| `package` | same package |
+| `public` | anywhere that imports the module |
+| `open` | anywhere; subclassable / overridable |
+
+## String ↔ Data ↔ URL
+
+```swift
+let str = "hello"
+let data = Data(str.utf8)
+let back = String(data: data, encoding: .utf8)
+
+let url  = URL(string: "https://example.com")!
+let base = URL(fileURLWithPath: "/tmp")
+let file = base.appending(path: "notes.txt")
+```
+
+## Common runtime pitfalls
+
+- **Retain cycles** in closures → use `[weak self]`.
+- **Force unwrapping** as a shortcut → replace with `guard let`.
+- **Background work on the main thread** → wrap in `Task.detached`
+  or a background `actor`.
+- **Mutating a struct stored in a `let`** → the compiler will tell you,
+  but if you wrapped it in a class, it won't.
+
+## See also
+
+- [SwiftUI cheatsheet](/docs/cheatsheets/swiftui)
+- [Swift Concurrency cheatsheet](/docs/cheatsheets/concurrency)
+- [Glossary](/docs/glossary)

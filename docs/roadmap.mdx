@@ -1,0 +1,196 @@
+---
+id: roadmap
+title: The iOS Development Roadmap
+sidebar_label: Roadmap
+slug: /roadmap
+description: The full 32-week path from zero to App Store — organised into phases so you always know what comes next and why.
+---
+
+import { Callout, StepList } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Learning Graph · 32 Weeks</span>
+  <h2>From `print("Hello, world!")` to a TestFlight build reviewers can download</h2>
+  <div>
+    The modules are not arbitrary — they map to the mental model of building
+    a real iOS app: <strong>language → platform → UI → architecture → data →
+    network → services → advanced → quality → performance → ship</strong>.
+  </div>
+</div>
+
+## How to read this page
+
+This is the **dependency graph** of the curriculum. If you're in a hurry or
+jumping in at a specific skill, you can skip forward — but every later module
+assumes the concepts from earlier phases.
+
+<Callout kind="tip" title="Rule of thumb">
+The first time through, follow the order. Come back to this page when you
+need a big-picture refresher, or when deciding what to revisit before an
+interview.
+</Callout>
+
+## Phase 1 · Language & Platform (Weeks 1–6)
+
+The foundations. Nothing else makes sense until you're fluent here.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/swift-foundation/overview">
+    <div className="phase">Module 01 · 3 Weeks</div>
+    <h4>Swift Foundation</h4>
+    <p>The language itself — optionals, structs, protocols, generics, errors, async/await.</p>
+    <div className="modules">4 topics · ~15h</div>
+  </a>
+  <a className="roadmap-node" href="/docs/ios-fundamentals/overview">
+    <div className="phase">Module 02 · 3 Weeks</div>
+    <h4>iOS Fundamentals & UIKit</h4>
+    <p>App lifecycle, sandbox, Xcode, UIViewController, Auto Layout, navigation.</p>
+    <div className="modules">4 topics · ~15h</div>
+  </a>
+</div>
+
+## Phase 2 · Modern UI (Weeks 7–10)
+
+Declarative UI is the default for new iOS work. Combine + navigation stacks
+complete the picture.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/swiftui/overview">
+    <div className="phase">Module 03 · 4 Weeks</div>
+    <h4>SwiftUI</h4>
+    <p>Views, state, navigation, animations, Combine, UIKit interop.</p>
+    <div className="modules">4 topics · ~20h</div>
+  </a>
+</div>
+
+## Phase 3 · Architecture & State (Weeks 11–13)
+
+The step that separates toys from apps. MVVM, Clean Architecture, dependency
+injection, modular Swift Packages.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/architecture-patterns/overview">
+    <div className="phase">Module 04 · 3 Weeks</div>
+    <h4>Architecture & Patterns</h4>
+    <p>MVVM, Clean Architecture, Repository, Coordinator, DI, TCA intro.</p>
+    <div className="modules">3 topics · ~12h</div>
+  </a>
+</div>
+
+## Phase 4 · Data & Network (Weeks 14–19)
+
+Where apps become real. Persistence, APIs, auth, live data.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/data-persistence/overview">
+    <div className="phase">Module 05 · 2 Weeks</div>
+    <h4>Data Persistence</h4>
+    <p>UserDefaults, Core Data, SwiftData, Keychain, CloudKit.</p>
+    <div className="modules">2 topics · ~8h</div>
+  </a>
+  <a className="roadmap-node" href="/docs/networking-api/overview">
+    <div className="phase">Module 06 · 3 Weeks</div>
+    <h4>Networking & API</h4>
+    <p>URLSession, Codable, Alamofire, WebSocket, GraphQL, OAuth.</p>
+    <div className="modules">3 topics · ~12h</div>
+  </a>
+  <a className="roadmap-node" href="/docs/firebase-cloud/overview">
+    <div className="phase">Module 07 · 3 Weeks</div>
+    <h4>Firebase & Cloud</h4>
+    <p>Auth, Firestore, Cloud Storage, APNs, Analytics, Crashlytics, Remote Config.</p>
+    <div className="modules">3 topics · ~12h</div>
+  </a>
+</div>
+
+## Phase 5 · Apple Platform Breadth (Weeks 20–22)
+
+Extensions, sensors, widgets, and the wider Apple ecosystem.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/advanced-components/overview">
+    <div className="phase">Module 08 · 3 Weeks</div>
+    <h4>Advanced Components</h4>
+    <p>Extensions, BGTaskScheduler, MapKit, AVFoundation, Core Bluetooth, WidgetKit, App Clips.</p>
+    <div className="modules">3 topics · ~12h</div>
+  </a>
+</div>
+
+## Phase 6 · Quality & Performance (Weeks 23–26)
+
+The difference between "ships" and "ships well".
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/testing-quality/overview">
+    <div className="phase">Module 09 · 2 Weeks</div>
+    <h4>Testing & Quality</h4>
+    <p>XCTest, Swift Testing, XCUITest, snapshots, TDD, coverage.</p>
+    <div className="modules">2 topics · ~8h</div>
+  </a>
+  <a className="roadmap-node" href="/docs/performance/overview">
+    <div className="phase">Module 10 · 2 Weeks</div>
+    <h4>Performance</h4>
+    <p>Instruments, ARC, app launch, network tuning, App Thinning, MetricKit.</p>
+    <div className="modules">2 topics · ~8h</div>
+  </a>
+</div>
+
+## Phase 7 · Ship (Weeks 27–28)
+
+Certificates, review, TestFlight, App Store, StoreKit 2, ASO.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/publishing/overview">
+    <div className="phase">Module 11 · 2 Weeks</div>
+    <h4>Publishing</h4>
+    <p>Code signing, TestFlight, App Store Connect, StoreKit 2, IAPs, ASO.</p>
+    <div className="modules">2 topics · ~8h</div>
+  </a>
+</div>
+
+## Phase 8 · Depth & Trends (Weeks 29–32)
+
+Swift Concurrency mastery, Core ML, ARKit, watchOS, visionOS, and team tooling.
+
+<div className="roadmap-grid">
+  <a className="roadmap-node" href="/docs/advanced-trending/overview">
+    <div className="phase">Module 12 · 3 Weeks</div>
+    <h4>Advanced & Trending</h4>
+    <p>Swift Concurrency deep dive, Core ML, ARKit, HealthKit, watchOS, visionOS, accessibility.</p>
+    <div className="modules">3 topics · ~12h</div>
+  </a>
+  <a className="roadmap-node" href="/docs/package-collaboration/overview">
+    <div className="phase">Module 13 · 1 Week</div>
+    <h4>Packages & Collaboration</h4>
+    <p>SPM, CocoaPods, Git, Xcode Cloud, Fastlane.</p>
+    <div className="modules">1 topic · ~5h</div>
+  </a>
+</div>
+
+## Capstone projects
+
+Each project forces you to combine multiple modules. Do at least the first
+two — they exercise the end-to-end pipeline.
+
+<StepList
+  steps={[
+    { title: 'Project 1 · E-Commerce', description: 'Modules 03–06, 11. SwiftUI + MVVM + URLSession + Apple Pay + StoreKit.' },
+    { title: 'Project 2 · Social Media', description: 'Modules 03, 04, 07. Firestore real-time, APNs push, media upload.' },
+    { title: 'Project 3 · Health & Fitness', description: 'Modules 03, 08, 12. HealthKit, Charts, Apple Watch companion.' },
+    { title: 'Project 4 · AR Shopping', description: 'Modules 03, 08, 12. ARKit + RealityKit, 3D model loading, SwiftUI overlay.' },
+    { title: 'Project 5 · Expense Tracker', description: 'Modules 03, 05, 08. SwiftData, Charts, Home Screen + Lock Screen widgets.' },
+  ]}
+/>
+
+## If you're on a shorter timeline
+
+<Callout kind="info" title="Two-week intensive">
+If you already know another modern typed language, you can cover Modules 01,
+03, 04, 06, and 09 in two focused weeks and be productive. Come back for the
+rest once you have a shippable feature in front of you.
+</Callout>
+
+## Where to start
+
+→ [Start with Module 01 — Swift Foundation](/docs/swift-foundation/overview)
+
+Or jump to the [Welcome page](/docs/intro) for a broader overview.

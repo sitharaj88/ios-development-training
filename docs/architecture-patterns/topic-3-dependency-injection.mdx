@@ -1,0 +1,260 @@
+---
+id: topic-3-dependency-injection
+title: Topic 3 · Dependency Injection & Coordinators
+sidebar_label: 3 · DI & Coordinators
+description: Manual init injection, SwiftUI Environment DI, composition roots, Coordinators and Routers, TCA pointers, and when to graduate to a DI container.
+---
+
+import { Callout, StepList, ComparisonCard, FeatureGrid, LibraryGrid, IOSArchDiagram, Diagram } from '@site/src/components/Doc';
+
+<div className="module-info">
+  <span className="module-info-pill">Topic 3 · 90–120 min · Module 04</span>
+  <h2>Wire the graph, own the navigation</h2>
+  <div>
+    DI is the practice of passing collaborators instead of creating them.
+    Coordinators are objects that own "where the user goes next." Master
+    both and your SwiftUI app stays malleable long after shipping.
+  </div>
+</div>
+
+## Why DI before frameworks
+
+The best dependency injection is the one you don't notice — initializer
+parameters. Every alternative (environment, containers, property wrappers)
+exists because `init` injection becomes tedious at some scale. Start with
+`init`; graduate only when the pain is real.
+
+```swift
+let repo = ProductRepository(api: ProductAPI(session: .shared),
+                             cache: SwiftDataCache(context: modelContext))
+let vm = ProductListViewModel(useCase: FetchProductsUseCase(repo: repo))
+```
+
+Every dependency is visible, every substitution explicit, nothing magic.
+
+## Three flavours of injection
+
+<StepList
+  steps={[
+    { title: 'Initializer injection (preferred)', description: 'Dependencies as init parameters. Type-checked, required, impossible to forget. Use unless you have a reason not to.' },
+    { title: 'Property injection', description: 'Set after init via a var. Useful for cyclic graphs or when a framework forces a zero-arg init. Use implicitly unwrapped sparingly.' },
+    { title: 'Ambient / Environment injection', description: 'Values flow through SwiftUI\'s Environment. Shines for cross-cutting concerns (theme, auth, flags); abused, it hides dependencies.' },
+  ]}
+/>
+
+## SwiftUI's built-in DI: `@Environment`
+
+SwiftUI already ships a DI system. Values put in the environment are
+available to every descendant without prop-drilling.
+
+```swift
+private struct AuthSessionKey: EnvironmentKey {
+    static let defaultValue: AuthSession = .unauthenticated
+}
+extension EnvironmentValues {
+    var authSession: AuthSession {
+        get { self[AuthSessionKey.self] }
+        set { self[AuthSessionKey.self] = newValue }
+    }
+}
+
+RootView().environment(\.authSession, session)  // inject at root
+// @Environment(\.authSession) var session       // use anywhere below
+```
+
+Use this for truly ambient values (theme, locale, authenticated user). Do
+*not* use it to sneak repositories into VMs — that's what `init` is for.
+Environment values flow into previews, making them a great fixture mechanism.
+
+## The Composition Root
+
+*One* place at app launch builds the real object graph — typically `@main`
+or an `AppDependencies` factory it owns.
+
+```swift
+@main
+struct ShopApp: App {
+    private let deps = AppDependencies.live
+    var body: some Scene {
+        WindowGroup {
+            RootView()
+                .environment(\.authSession, deps.authSession)
+                .environment(deps.router)
+        }
+    }
+}
+
+struct AppDependencies {
+    let authSession: AuthSession
+    let productRepo: ProductRepositoryProtocol
+    let orderRepo: OrderRepositoryProtocol
+    let router: AppRouter
+    static var live: AppDependencies { /* wire real implementations */ }
+    static var preview: AppDependencies { /* wire in-memory fakes */ }
+}
+```
+
+Two factories — `live` and `preview` — cover production and SwiftUI
+previews with no conditional code. Tests build their own graphs directly.
+
+## Manual DI vs container-based DI
+
+<ComparisonCard
+  left={{
+    label: 'Manual init DI',
+    title: 'Plain Swift, zero dependencies',
+    variant: 'neutral',
+    points: [
+      'Every dependency visible in source',
+      'Compile-time checked — no runtime surprises',
+      'Zero setup, zero learning curve',
+      'Tedious when the graph exceeds ~50 nodes',
+    ],
+  }}
+  right={{
+    label: 'DI container',
+    title: 'Registration + resolution',
+    variant: 'accent',
+    points: [
+      'Register once, resolve anywhere',
+      'Lifecycle scopes (singleton / scoped / unique)',
+      'Cleaner composition root at scale',
+      'Runtime resolution — errors at first use (Swinject)',
+    ],
+  }}
+/>
+
+<Callout kind="info" title="Reach for a DI container only when manual DI gets painful">
+Stay with manual init injection while the composition root is under ~150
+lines — it's more readable, refactorable, and obvious to new teammates.
+Introduce Factory or Swinject when the same dependency gets threaded
+through five constructors to reach one leaf VM. That's the signal.
+</Callout>
+
+## Coordinators — owning the "where next" decision
+
+A Coordinator is an object whose single job is navigation. Views emit
+intents ("user tapped Product X"); the coordinator decides whether that
+opens a detail screen, a paywall, or a login sheet. In SwiftUI it becomes
+a lightweight `@Observable` wrapper around `NavigationStack`'s path.
+
+```swift
+@Observable
+final class AppRouter {
+    var path = NavigationPath()
+    var sheet: Sheet?
+
+    enum Sheet: Identifiable, Hashable {
+        case login, paywall, productDetail(Product.ID)
+        var id: Self { self }
+    }
+
+    func open(_ product: Product) { path.append(ProductRoute.detail(product.id)) }
+    func openCart() { path.append(CartRoute()) }
+    func requireAuth() { sheet = .login }
+    func reset() { path = NavigationPath() }
+}
+
+struct RootView: View {
+    @Environment(AppRouter.self) private var router
+    var body: some View {
+        @Bindable var router = router
+        NavigationStack(path: $router.path) {
+            HomeView()
+                .navigationDestination(for: ProductRoute.self) { route in
+                    switch route {
+                    case .detail(let id): ProductDetailView(id: id)
+                    }
+                }
+                .sheet(item: $router.sheet) { sheet in
+                    switch sheet {
+                    case .login: LoginView()
+                    case .paywall: PaywallView()
+                    case .productDetail(let id): ProductDetailView(id: id)
+                    }
+                }
+        }
+    }
+}
+```
+
+The router lives in the environment; VMs call `router.open(...)` without
+knowing what a `NavigationStack` is. Deep links mutate `router.path` in
+one line. Large apps subdivide into `CheckoutRouter` / `ProfileRouter` as
+children of `AppRouter` so each feature owns its own navigation surface.
+
+## Router vs native routing
+
+<ComparisonCard
+  left={{
+    label: 'NavigationStack + state',
+    title: 'SwiftUI-native routing',
+    variant: 'neutral',
+    points: [
+      'Path lives in a root view\'s @State',
+      'Zero abstraction — path is just data',
+      'Great for apps under 30 screens',
+      'Deep links handled in the root view',
+    ],
+  }}
+  right={{
+    label: '@Observable Router',
+    title: 'Centralized navigation object',
+    variant: 'accent',
+    points: [
+      'Router injected via environment',
+      'Reusable across modules / feature packages',
+      'Easy analytics & deep-link interception',
+      'Becomes essential at 30+ screens',
+    ],
+  }}
+/>
+
+## An aside on TCA
+
+[The Composable Architecture](https://github.com/pointfreeco/swift-composable-architecture)
+takes a different path: state is a struct, actions are an enum, a reducer
+maps `(state, action) → effects`, and dependencies flow through
+`DependencyValues`. Over MVVM + Coordinators it adds exhaustive testing
+(every state change and effect must be accounted for), navigation as
+serializable state (`@Presents`, `Stack`, `Alert`), and time-travel
+debugging via the TCA devtools.
+
+The cost is real: boilerplate, a learning curve, and a strong opinion
+about how logic is written. Reach for TCA when your app is heavily state-
+driven (dashboards, editors, multi-step wizards) or needs bulletproof test
+coverage. Start with [Point-Free's videos](https://www.pointfree.co).
+
+## DI libraries, compared
+
+<LibraryGrid libraries={[
+  { name: 'Factory', tagline: 'Modern Swift DI', description: 'Property-wrapper container by Michael Long. Compile-time registration, supports scopes, excellent @Observable integration, tiny runtime.', url: 'https://github.com/hmlongco/Factory', recommended: true },
+  { name: 'Swinject', tagline: 'Classic DI container', description: 'Mature, assembly-based container. Great docs, huge ecosystem, but errors are runtime-only.', url: 'https://github.com/Swinject/Swinject' },
+  { name: 'Needle', tagline: 'Compile-time DI (Uber)', description: 'Hierarchical DI with a code generator. Build fails if the graph is incomplete — impossible to ship a broken container.', url: 'https://github.com/uber/needle' },
+  { name: 'TCA Dependencies', tagline: 'Point-Free dependency values', description: 'Ships as part of swift-composable-architecture. Values thread through reducers with override-on-read semantics for tests.', url: 'https://github.com/pointfreeco/swift-dependencies' },
+]} />
+
+Cheat sheet: stay manual until it hurts; reach for **Factory** first
+(Swift-native ergonomics); pick **Swinject** for assembly-based registration
+or mixed Obj-C; choose **Needle** when build-time graph correctness matters
+more than onboarding speed.
+
+## Key takeaways
+
+- `init` injection is the default; alternatives earn their place by removing pain.
+- `@Environment` is DI — use it for ambient values, not repositories.
+- A Composition Root with `live` / `preview` factories beats global singletons.
+- Routers turn navigation into testable state, not closures in buttons.
+
+## Practice exercises
+
+1. Build an `@Observable` `AppRouter` that owns a `NavigationPath` and a
+   sheet enum. Inject it via `@Environment` and refactor one existing view
+   to navigate through the router instead of `NavigationLink`.
+2. Starting from manual init injection, introduce Factory (or Swinject) in
+   a single feature. Measure the diff — is the composition root clearer
+   or just differently verbose? Keep whichever is easier to onboard.
+
+## Next module
+
+Continue to **[Module 05 · Data Persistence & Storage](/docs/data-persistence/overview)** — give your app a memory with SwiftData, Core Data, and files.
